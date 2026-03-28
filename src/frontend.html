@@ -895,8 +895,12 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- SERVER STATUS VIEW -->
-            <div x-show="$store.app.currentView === 'server-status'" x-data="serverStatus()">
-                <h2 class="text-xl font-bold mb-4">Server Status</h2>
+            <div x-show="$store.app.currentView === 'server-status'" x-data="serverStatus()"
+                 x-init="$watch('$store.app.currentView', v => { if(v === 'server-status') loadStatus(); })">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold">Server Status</h2>
+                    <button @click="loadStatus()" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Refresh</button>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                         <div class="text-sm text-gray-500">Uptime</div>
@@ -926,7 +930,8 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- SERVER VARIABLES VIEW -->
-            <div x-show="$store.app.currentView === 'server-variables'" x-data="serverVariables()">
+            <div x-show="$store.app.currentView === 'server-variables'" x-data="serverVariables()"
+                 x-init="$watch('$store.app.currentView', v => { if(v === 'server-variables') loadVars(); })">
                 <div class="flex items-center justify-between mb-4">
                     <h2 class="text-xl font-bold">Server Variables</h2>
                     <input type="text" x-model="search" @input.debounce.300ms="loadVars()" placeholder="Search variables..."
@@ -951,7 +956,8 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- PROCESSES VIEW -->
-            <div x-show="$store.app.currentView === 'server-processes'" x-data="processViewer()">
+            <div x-show="$store.app.currentView === 'server-processes'" x-data="processViewer()"
+                 x-init="$watch('$store.app.currentView', v => { if(v === 'server-processes') loadProcesses(); })">
                 <div class="flex items-center justify-between mb-4">
                     <h2 class="text-xl font-bold">Process List</h2>
                     <button @click="loadProcesses()" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Refresh</button>
@@ -982,7 +988,8 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- USERS VIEW -->
-            <div x-show="$store.app.currentView === 'users'" x-data="userManager()">
+            <div x-show="$store.app.currentView === 'users'" x-data="userManager()"
+                 x-init="$watch('$store.app.currentView', v => { if(v === 'users') loadUsers(); })">
                 <div class="flex items-center justify-between mb-4">
                     <h2 class="text-xl font-bold">User Management</h2>
                     <button @click="showCreate = true" class="px-3 py-1.5 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700">Create User</button>
@@ -1041,7 +1048,8 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- ROUTINES VIEW -->
-            <div x-show="$store.app.currentView === 'routines'" x-data="routineViewer()">
+            <div x-show="$store.app.currentView === 'routines'" x-data="routineViewer()"
+                 x-init="$watch('$store.app.currentView', v => { if(v === 'routines') loadRoutines(); })">
                 <h2 class="text-xl font-bold mb-4">Routines <span class="text-sm font-normal text-gray-500" x-text="'— ' + $store.app.currentDb"></span></h2>
                 <div class="flex gap-4 border-b border-gray-200 dark:border-gray-700 mb-4 text-sm">
                     <button @click="tab = 'procedures'" :class="tab === 'procedures' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Procedures</button>

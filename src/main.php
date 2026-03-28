@@ -117,7 +117,7 @@ $authMiddleware = function () use ($config): ?array {
     if ($config['security']['read_only_mode'] && in_array($method, ['POST', 'PUT', 'DELETE', 'PATCH'])) {
         $uri = $_SERVER['REQUEST_URI'] ?? '';
         // Allow login/logout/export/query(read)/explain even in read-only mode
-        $writeExempt = ['/api/auth/', '/api/export/', '/api/query/explain'];
+        $writeExempt = ['/api/auth/', '/api/export/', '/api/query/'];
         $isExempt = false;
         foreach ($writeExempt as $prefix) {
             if (str_contains($uri, $prefix)) { $isExempt = true; break; }
