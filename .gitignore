@@ -1,0 +1,14 @@
+/vendor/
+/databrowse.php
+/databrowse.config.json
+/databrowse.log
+*.cache
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.bak
+.project/

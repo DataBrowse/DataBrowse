@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/helpers/TestDatabase.php"
+         colors="true"
+         stopOnFailure="false">
+    <testsuites>
+        <testsuite name="DataBrowse">
+            <directory>tests</directory>
+        </testsuite>
+    </testsuites>
+    <php>
+        <env name="DATABROWSE_TEST_HOST" value="127.0.0.1"/>
+        <env name="DATABROWSE_TEST_USER" value="root"/>
+        <env name="DATABROWSE_TEST_PASS" value=""/>
+        <env name="DATABROWSE_TEST_PORT" value="3306"/>
+    </php>
+</phpunit>

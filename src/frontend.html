@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DataBrowse</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><ellipse cx='50' cy='30' rx='40' ry='15' fill='%234f46e5'/><path d='M10 30v40c0 8.28 17.9 15 40 15s40-6.72 40-15V30' fill='none' stroke='%234f46e5' stroke-width='4'/><ellipse cx='50' cy='50' rx='40' ry='15' fill='none' stroke='%234f46e5' stroke-width='4'/><ellipse cx='50' cy='70' rx='40' ry='15' fill='none' stroke='%234f46e5' stroke-width='4'/></svg>">
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com" nonce="{{CSP_NONCE}}"></script>
+    <script nonce="{{CSP_NONCE}}">
+    tailwind.config = {
+        darkMode: 'class',
+        theme: {
+            extend: {
+                colors: {
+                    brand: { 50:'#eef2ff', 100:'#e0e7ff', 200:'#c7d2fe', 300:'#a5b4fc', 400:'#818cf8', 500:'#6366f1', 600:'#4f46e5', 700:'#4338ca', 800:'#3730a3', 900:'#312e81' },
+                }
+            }
+        }
+    };
+    </script>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" nonce="{{CSP_NONCE}}"></script>
+
+    <!-- CodeMirror 6 via CDN -->
+    <script nonce="{{CSP_NONCE}}">
+    // CodeMirror will be lazy-loaded when SQL editor is first opened
+    let cmLoaded = false;
+    let cmEditor = null;
+    async function loadCodeMirror(target) {
+        if (cmLoaded) return;
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/combine/npm/@codemirror/state@6,npm/@codemirror/view@6,npm/@codemirror/lang-sql@6,npm/@codemirror/language@6,npm/@codemirror/commands@6,npm/@codemirror/autocomplete@6,npm/@codemirror/search@6';
+        script.nonce = '{{CSP_NONCE}}';
+        document.head.appendChild(script);
+        cmLoaded = true;
+    }
+    </script>
+
+    <style nonce="{{CSP_NONCE}}">
+    [x-cloak] { display: none !important; }
+    .cm-editor { height: 200px; font-size: 14px; border: 1px solid #e5e7eb; border-radius: 0.375rem; }
+    .dark .cm-editor { border-color: #374151; background: #1f2937; }
+    .toast-enter { animation: slideIn 0.3s ease-out; }
+    .toast-leave { animation: slideOut 0.3s ease-in; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
+    .skeleton { background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+    .dark .skeleton { background: linear-gradient(90deg, #374151 25%, #4b5563 50%, #374151 75%); background-size: 200% 100%; }
+    @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    .null-badge { font-style: italic; color: #9ca3af; }
+    </style>
+</head>
+<body class="h-full bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors" x-data x-cloak>
+
+<!-- Theme initialization -->
+<script nonce="{{CSP_NONCE}}">
+(function(){
+    const t = localStorage.getItem('db_theme') || 'system';
+    if (t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+    }
+})();
+</script>
+
+<!-- ==================== ALPINE STORES ==================== -->
+<script nonce="{{CSP_NONCE}}">
+document.addEventListener('alpine:init', () => {
+
+    // === Toast Store ===
+    Alpine.store('toast', {
+        items: [],
+        show(message, type = 'success', duration = 4000) {
+            const id = Date.now();
+            this.items.push({ id, message, type });
+            setTimeout(() => { this.items = this.items.filter(t => t.id !== id); }, duration);
+        },
+        success(msg) { this.show(msg, 'success'); },
+        error(msg) { this.show(msg, 'error', 6000); },
+        warning(msg) { this.show(msg, 'warning', 5000); },
+    });
+
+    // === App Store ===
+    Alpine.store('app', {
+        authenticated: false,
+        username: null,
+        host: null,
+        csrfToken: null,
+        serverInfo: null,
+
+        currentView: 'login',
+        currentDb: null,
+        currentTable: null,
+
+        theme: localStorage.getItem('db_theme') || 'system',
+        sidebarOpen: window.innerWidth > 768,
+        loading: false,
+
+        databases: [],
+        tables: [],
+
+        // Confirmation dialog
+        confirmDialog: { open: false, title: '', message: '', action: null },
+
+        confirm(title, message) {
+            return new Promise((resolve) => {
+                this.confirmDialog = { open: true, title, message, action: resolve };
+            });
+        },
+
+        setTheme(theme) {
+            this.theme = theme;
+            localStorage.setItem('db_theme', theme);
+            if (theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        },
+
+        async api(method, url, body = null) {
+            const opts = {
+                method,
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': this.csrfToken || '' },
+            };
+            if (body) opts.body = JSON.stringify(body);
+            const res = await fetch(url, opts);
+            if (res.status === 401) {
+                this.authenticated = false;
+                this.currentView = 'login';
+                Alpine.store('toast').warning('Session expired. Please log in again.');
+                throw new Error('Session expired');
+            }
+            const data = await res.json();
+            if (!res.ok && data.error) {
+                throw new Error(typeof data.error === 'string' ? data.error : 'Request failed');
+            }
+            return data;
+        },
+
+        async login(host, username, password, port) {
+            this.loading = true;
+            try {
+                const data = await this.api('POST', 'api/auth/login', { host, username, password, port: parseInt(port) });
+                this.authenticated = true;
+                this.username = username;
+                this.host = host;
+                this.csrfToken = data.csrf_token;
+                this.serverInfo = data.server;
+                this.currentView = 'databases';
+                await this.fetchDatabases();
+                Alpine.store('toast').success('Connected to ' + host);
+            } catch (e) {
+                Alpine.store('toast').error(e.message);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async logout() {
+            try { await this.api('POST', 'api/auth/logout'); } catch(e) {}
+            this.authenticated = false;
+            this.username = null;
+            this.host = null;
+            this.csrfToken = null;
+            this.serverInfo = null;
+            this.databases = [];
+            this.tables = [];
+            this.currentDb = null;
+            this.currentTable = null;
+            this.currentView = 'login';
+        },
+
+        async fetchDatabases() {
+            try {
+                const data = await this.api('GET', 'api/databases');
+                this.databases = data.databases;
+            } catch (e) {
+                Alpine.store('toast').error('Failed to load databases');
+            }
+        },
+
+        async fetchTables(db) {
+            this.currentDb = db;
+            try {
+                const data = await this.api('GET', 'api/tables/' + encodeURIComponent(db));
+                this.tables = data.tables;
+            } catch (e) {
+                Alpine.store('toast').error('Failed to load tables');
+            }
+        },
+
+        navigate(view, db = null, table = null) {
+            this.currentView = view;
+            if (db !== null) this.currentDb = db;
+            if (table !== null) this.currentTable = table;
+            if (db && view !== 'databases') this.fetchTables(db);
+        },
+
+        formatSize(bytes) {
+            if (!bytes || bytes == 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        },
+
+        formatDuration(seconds) {
+            seconds = parseInt(seconds);
+            if (seconds < 60) return seconds + 's';
+            if (seconds < 3600) return Math.floor(seconds/60) + 'm ' + (seconds%60) + 's';
+            if (seconds < 86400) return Math.floor(seconds/3600) + 'h ' + Math.floor((seconds%3600)/60) + 'm';
+            return Math.floor(seconds/86400) + 'd ' + Math.floor((seconds%86400)/3600) + 'h';
+        },
+    });
+
+    // Check auth status on load
+    fetch('api/auth/status').then(r => r.json()).then(data => {
+        if (data.authenticated) {
+            Alpine.store('app').authenticated = true;
+            Alpine.store('app').username = data.username;
+            Alpine.store('app').host = data.host;
+            Alpine.store('app').currentView = 'databases';
+            Alpine.store('app').fetchDatabases();
+        }
+    }).catch(() => {});
+});
+</script>
+
+<!-- ==================== TOAST NOTIFICATIONS ==================== -->
+<div class="fixed top-4 right-4 z-50 space-y-2" x-data>
+    <template x-for="toast in $store.toast.items" :key="toast.id">
+        <div class="toast-enter flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-white text-sm max-w-sm"
+             :class="{ 'bg-green-600': toast.type === 'success', 'bg-red-600': toast.type === 'error', 'bg-yellow-500 text-gray-900': toast.type === 'warning' }">
+            <span x-text="toast.message"></span>
+        </div>
+    </template>
+</div>
+
+<!-- ==================== CONFIRM DIALOG ==================== -->
+<div x-data x-show="$store.app.confirmDialog.open" x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+     @keydown.escape.window="$store.app.confirmDialog.open = false; $store.app.confirmDialog.action?.(false)">
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-md mx-4" @click.outside="$store.app.confirmDialog.open = false; $store.app.confirmDialog.action?.(false)">
+        <h3 class="text-lg font-semibold mb-2" x-text="$store.app.confirmDialog.title"></h3>
+        <p class="text-gray-600 dark:text-gray-400 mb-4" x-text="$store.app.confirmDialog.message"></p>
+        <div class="flex justify-end gap-2">
+            <button class="px-4 py-2 rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-sm"
+                    @click="$store.app.confirmDialog.open = false; $store.app.confirmDialog.action?.(false)">Cancel</button>
+            <button class="px-4 py-2 rounded bg-red-600 text-white hover:bg-red-700 text-sm"
+                    @click="$store.app.confirmDialog.open = false; $store.app.confirmDialog.action?.(true)">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== LOGIN VIEW ==================== -->
+<div x-data="{ host: '127.0.0.1', username: 'root', password: '', port: '3306' }"
+     x-show="$store.app.currentView === 'login'"
+     class="min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-8 w-full max-w-md">
+        <div class="text-center mb-6">
+            <svg class="mx-auto w-16 h-16 text-brand-600" viewBox="0 0 100 100" fill="none">
+                <ellipse cx="50" cy="30" rx="40" ry="15" fill="currentColor"/>
+                <path d="M10 30v40c0 8.28 17.9 15 40 15s40-6.72 40-15V30" stroke="currentColor" stroke-width="4" fill="none"/>
+                <ellipse cx="50" cy="50" rx="40" ry="15" stroke="currentColor" stroke-width="4" fill="none"/>
+                <ellipse cx="50" cy="70" rx="40" ry="15" stroke="currentColor" stroke-width="4" fill="none"/>
+            </svg>
+            <h1 class="text-2xl font-bold mt-3">DataBrowse</h1>
+            <p class="text-gray-500 dark:text-gray-400 text-sm mt-1">MySQL / MariaDB Management</p>
+        </div>
+        <form @submit.prevent="$store.app.login(host, username, password, port)" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium mb-1">Host</label>
+                <input type="text" x-model="host" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-brand-500 outline-none" required>
+            </div>
+            <div class="grid grid-cols-3 gap-3">
+                <div class="col-span-2">
+                    <label class="block text-sm font-medium mb-1">Username</label>
+                    <input type="text" x-model="username" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-brand-500 outline-none" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Port</label>
+                    <input type="number" x-model="port" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-brand-500 outline-none">
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium mb-1">Password</label>
+                <input type="password" x-model="password" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-brand-500 outline-none">
+            </div>
+            <button type="submit" :disabled="$store.app.loading"
+                    class="w-full py-2.5 bg-brand-600 text-white rounded-lg hover:bg-brand-700 font-medium disabled:opacity-50 transition">
+                <span x-show="!$store.app.loading">Connect</span>
+                <span x-show="$store.app.loading">Connecting...</span>
+            </button>
+        </form>
+        <div class="mt-4 flex justify-center">
+            <button @click="$store.app.setTheme($store.app.theme === 'dark' ? 'light' : 'dark')"
+                    class="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1">
+                <span x-show="$store.app.theme !== 'dark'">Dark Mode</span>
+                <span x-show="$store.app.theme === 'dark'">Light Mode</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== MAIN LAYOUT ==================== -->
+<div x-show="$store.app.authenticated" x-cloak class="h-screen flex flex-col">
+
+    <!-- Top Bar -->
+    <header class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-3">
+            <button @click="$store.app.sidebarOpen = !$store.app.sidebarOpen" class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 lg:hidden">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <span class="font-bold text-brand-600 text-lg">DataBrowse</span>
+            <span class="hidden sm:inline text-xs text-gray-400" x-text="$store.app.serverInfo?.version"></span>
+        </div>
+
+        <!-- Breadcrumb -->
+        <nav class="hidden md:flex items-center gap-1 text-sm">
+            <button @click="$store.app.navigate('databases')" class="text-gray-500 hover:text-brand-600">Server</button>
+            <template x-if="$store.app.currentDb">
+                <div class="flex items-center gap-1">
+                    <span class="text-gray-400">/</span>
+                    <button @click="$store.app.navigate('tables', $store.app.currentDb)" class="text-gray-500 hover:text-brand-600" x-text="$store.app.currentDb"></button>
+                </div>
+            </template>
+            <template x-if="$store.app.currentTable">
+                <div class="flex items-center gap-1">
+                    <span class="text-gray-400">/</span>
+                    <span class="text-gray-700 dark:text-gray-300 font-medium" x-text="$store.app.currentTable"></span>
+                </div>
+            </template>
+        </nav>
+
+        <div class="flex items-center gap-2">
+            <button @click="$store.app.setTheme($store.app.theme === 'dark' ? 'light' : 'dark')"
+                    class="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700" title="Toggle theme">
+                <svg x-show="$store.app.theme !== 'dark'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+                <svg x-show="$store.app.theme === 'dark'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+            </button>
+            <div class="text-sm text-gray-500">
+                <span x-text="$store.app.username"></span>@<span x-text="$store.app.host"></span>
+            </div>
+            <button @click="$store.app.logout()" class="px-3 py-1.5 text-sm bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600">Logout</button>
+        </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden">
+
+        <!-- ==================== SIDEBAR ==================== -->
+        <aside :class="$store.app.sidebarOpen ? 'w-64' : 'w-0 overflow-hidden'"
+               class="bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col shrink-0 transition-all duration-200">
+            <div class="p-3" x-data="{ search: '', expandedDb: null }">
+                <input type="text" x-model="search" placeholder="Search databases..."
+                       class="w-full px-3 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none focus:ring-1 focus:ring-brand-500">
+
+                <!-- Navigation links -->
+                <div class="mt-3 space-y-1">
+                    <button @click="$store.app.navigate('databases')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                            :class="$store.app.currentView === 'databases' ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300' : ''">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+                        Databases
+                    </button>
+                    <button @click="$store.app.navigate('server-status')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+                            :class="$store.app.currentView === 'server-status' ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300' : ''">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        Server Status
+                    </button>
+                    <button @click="$store.app.navigate('server-variables')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        Variables
+                    </button>
+                    <button @click="$store.app.navigate('server-processes')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                        Processes
+                    </button>
+                    <button @click="$store.app.navigate('users')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"/></svg>
+                        Users
+                    </button>
+                </div>
+
+                <!-- Database tree -->
+                <div class="mt-3 border-t border-gray-200 dark:border-gray-700 pt-3">
+                    <template x-for="db in $store.app.databases.filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()))" :key="db.name">
+                        <div>
+                            <button @click="expandedDb = expandedDb === db.name ? null : db.name; $store.app.navigate('tables', db.name)"
+                                    class="w-full text-left px-2 py-1 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-1.5"
+                                    :class="$store.app.currentDb === db.name ? 'text-brand-600 font-medium' : ''">
+                                <svg class="w-3.5 h-3.5 transition-transform" :class="expandedDb === db.name ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                <span x-text="db.name" class="truncate"></span>
+                                <span class="ml-auto text-xs text-gray-400" x-text="db.table_count"></span>
+                            </button>
+                            <div x-show="expandedDb === db.name" x-collapse class="ml-5 space-y-0.5">
+                                <template x-for="tbl in $store.app.tables" :key="tbl.name">
+                                    <button @click="$store.app.currentTable = tbl.name; $store.app.navigate('data', db.name, tbl.name)"
+                                            class="w-full text-left px-2 py-0.5 text-xs rounded hover:bg-gray-100 dark:hover:bg-gray-700 truncate"
+                                            :class="$store.app.currentTable === tbl.name ? 'text-brand-600 font-medium' : 'text-gray-600 dark:text-gray-400'"
+                                            x-text="tbl.name"></button>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ==================== MAIN CONTENT ==================== -->
+        <main class="flex-1 overflow-auto p-4">
+
+            <!-- DATABASES VIEW -->
+            <div x-show="$store.app.currentView === 'databases'" x-data="databaseList()">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold">Databases</h2>
+                    <button @click="showCreateDialog = true" class="px-3 py-1.5 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700">Create Database</button>
+                </div>
+
+                <!-- Create database dialog -->
+                <div x-show="showCreateDialog" class="fixed inset-0 z-40 flex items-center justify-center bg-black/50" x-cloak>
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-md mx-4 w-full">
+                        <h3 class="text-lg font-semibold mb-4">Create Database</h3>
+                        <div class="space-y-3">
+                            <div>
+                                <label class="block text-sm font-medium mb-1">Name</label>
+                                <input type="text" x-model="newDbName" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none" placeholder="database_name">
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Charset</label>
+                                    <select x-model="newDbCharset" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none">
+                                        <option>utf8mb4</option><option>utf8</option><option>latin1</option><option>ascii</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Collation</label>
+                                    <select x-model="newDbCollation" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none">
+                                        <option>utf8mb4_unicode_ci</option><option>utf8mb4_general_ci</option><option>utf8_general_ci</option><option>latin1_swedish_ci</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex justify-end gap-2 mt-4">
+                            <button @click="showCreateDialog = false" class="px-4 py-2 rounded bg-gray-200 dark:bg-gray-700 text-sm">Cancel</button>
+                            <button @click="createDb()" class="px-4 py-2 rounded bg-brand-600 text-white text-sm hover:bg-brand-700">Create</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="$store.app.databases.length === 0" class="text-center py-12 text-gray-500">
+                    <svg class="mx-auto w-16 h-16 mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+                    <p>No databases found</p>
+                </div>
+
+                <div class="grid gap-3">
+                    <template x-for="db in $store.app.databases" :key="db.name">
+                        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 flex items-center justify-between hover:border-brand-300 dark:hover:border-brand-700 cursor-pointer transition"
+                             @click="$store.app.navigate('tables', db.name)">
+                            <div>
+                                <div class="font-medium" x-text="db.name"></div>
+                                <div class="text-sm text-gray-500 mt-0.5">
+                                    <span x-text="db.table_count"></span> tables &middot;
+                                    <span x-text="$store.app.formatSize(db.total_size)"></span> &middot;
+                                    <span x-text="db.charset"></span>
+                                </div>
+                            </div>
+                            <button @click.stop="dropDb(db.name)" class="p-1.5 text-gray-400 hover:text-red-600 rounded" title="Drop database">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- TABLES VIEW -->
+            <div x-show="$store.app.currentView === 'tables'" x-data="tableList()">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold" x-text="$store.app.currentDb"></h2>
+                    <div class="flex gap-2">
+                        <button @click="$store.app.navigate('query', $store.app.currentDb)" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">SQL Editor</button>
+                        <button @click="$store.app.navigate('routines', $store.app.currentDb)" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Routines</button>
+                        <button @click="$store.app.navigate('export', $store.app.currentDb)" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Export</button>
+                        <button @click="$store.app.navigate('import', $store.app.currentDb)" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Import</button>
+                        <button @click="showCreateTable = true" class="px-3 py-1.5 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700">Create Table</button>
+                    </div>
+                </div>
+
+                <!-- Create table dialog -->
+                <div x-show="showCreateTable" class="fixed inset-0 z-40 flex items-center justify-center bg-black/50" x-cloak>
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-2xl mx-4 w-full max-h-[80vh] overflow-auto">
+                        <h3 class="text-lg font-semibold mb-4">Create Table</h3>
+                        <div class="space-y-3">
+                            <input type="text" x-model="newTableName" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none" placeholder="table_name">
+                            <div class="space-y-2">
+                                <template x-for="(col, i) in newTableColumns" :key="i">
+                                    <div class="flex gap-2 items-center">
+                                        <input type="text" x-model="col.name" class="flex-1 px-2 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 outline-none" placeholder="column_name">
+                                        <select x-model="col.type" class="px-2 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 outline-none">
+                                            <option>INT</option><option>BIGINT</option><option>VARCHAR</option><option>TEXT</option><option>DATETIME</option><option>DATE</option><option>DECIMAL</option><option>FLOAT</option><option>BOOLEAN</option><option>JSON</option><option>BLOB</option>
+                                        </select>
+                                        <input type="number" x-model="col.length" class="w-20 px-2 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 outline-none" placeholder="Length">
+                                        <label class="flex items-center gap-1 text-xs"><input type="checkbox" x-model="col.primary"> PK</label>
+                                        <label class="flex items-center gap-1 text-xs"><input type="checkbox" x-model="col.auto_increment"> AI</label>
+                                        <label class="flex items-center gap-1 text-xs"><input type="checkbox" x-model="col.nullable"> Null</label>
+                                        <button @click="newTableColumns.splice(i, 1)" class="text-red-500 text-sm">&times;</button>
+                                    </div>
+                                </template>
+                            </div>
+                            <button @click="newTableColumns.push({name:'',type:'VARCHAR',length:255,primary:false,auto_increment:false,nullable:true})" class="text-sm text-brand-600 hover:underline">+ Add column</button>
+                        </div>
+                        <div class="flex justify-end gap-2 mt-4">
+                            <button @click="showCreateTable = false" class="px-4 py-2 rounded bg-gray-200 dark:bg-gray-700 text-sm">Cancel</button>
+                            <button @click="createTable()" class="px-4 py-2 rounded bg-brand-600 text-white text-sm hover:bg-brand-700">Create</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div x-show="$store.app.tables.length === 0" class="text-center py-12 text-gray-500">
+                    <p>No tables in this database</p>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm" x-show="$store.app.tables.length > 0">
+                        <thead>
+                            <tr class="border-b border-gray-200 dark:border-gray-700 text-left">
+                                <th class="py-2 px-3 font-medium">Name</th>
+                                <th class="py-2 px-3 font-medium">Engine</th>
+                                <th class="py-2 px-3 font-medium text-right">Rows</th>
+                                <th class="py-2 px-3 font-medium text-right">Size</th>
+                                <th class="py-2 px-3 font-medium">Collation</th>
+                                <th class="py-2 px-3 font-medium text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="tbl in $store.app.tables" :key="tbl.name">
+                                <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
+                                    @click="$store.app.navigate('data', $store.app.currentDb, tbl.name)">
+                                    <td class="py-2 px-3 font-medium text-brand-600" x-text="tbl.name"></td>
+                                    <td class="py-2 px-3 text-gray-500" x-text="tbl.engine"></td>
+                                    <td class="py-2 px-3 text-right" x-text="Number(tbl.row_count || 0).toLocaleString()"></td>
+                                    <td class="py-2 px-3 text-right" x-text="$store.app.formatSize((parseInt(tbl.data_size)||0) + (parseInt(tbl.index_size)||0))"></td>
+                                    <td class="py-2 px-3 text-gray-500 text-xs" x-text="tbl.collation"></td>
+                                    <td class="py-2 px-3 text-right" @click.stop>
+                                        <button @click="$store.app.navigate('structure', $store.app.currentDb, tbl.name)" class="text-xs text-gray-500 hover:text-brand-600 mr-2">Structure</button>
+                                        <button @click="truncateTable(tbl.name)" class="text-xs text-gray-500 hover:text-yellow-600 mr-2">Truncate</button>
+                                        <button @click="dropTable(tbl.name)" class="text-xs text-gray-500 hover:text-red-600">Drop</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- DATA VIEW -->
+            <div x-show="$store.app.currentView === 'data'" x-data="dataViewer()" x-init="$watch('$store.app.currentTable', () => { if($store.app.currentView === 'data') loadData(); })">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-3">
+                        <h2 class="text-xl font-bold" x-text="$store.app.currentTable"></h2>
+                        <div class="flex border rounded-lg overflow-hidden text-sm">
+                            <button @click="$store.app.navigate('data', $store.app.currentDb, $store.app.currentTable)" class="px-3 py-1 bg-brand-600 text-white">Data</button>
+                            <button @click="$store.app.navigate('structure', $store.app.currentDb, $store.app.currentTable)" class="px-3 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">Structure</button>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input type="text" x-model="search" @input.debounce.300ms="loadData()" placeholder="Search..."
+                               class="px-3 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none w-48">
+                        <button @click="showInsert = true" class="px-3 py-1.5 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700">+ Insert Row</button>
+                        <button x-show="selectedRows.length > 0" @click="batchDelete()" class="px-3 py-1.5 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700">
+                            Delete (<span x-text="selectedRows.length"></span>)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Insert row dialog -->
+                <div x-show="showInsert" class="fixed inset-0 z-40 flex items-center justify-center bg-black/50" x-cloak>
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-lg mx-4 w-full max-h-[80vh] overflow-auto">
+                        <h3 class="text-lg font-semibold mb-4">Insert Row</h3>
+                        <div class="space-y-2">
+                            <template x-for="field in fields" :key="field.name">
+                                <div x-show="!field.isAutoInc">
+                                    <label class="block text-xs font-medium text-gray-500 mb-0.5" x-text="field.name"></label>
+                                    <input type="text" x-model="insertData[field.name]" class="w-full px-3 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 outline-none">
+                                </div>
+                            </template>
+                        </div>
+                        <div class="flex justify-end gap-2 mt-4">
+                            <button @click="showInsert = false" class="px-4 py-2 rounded bg-gray-200 dark:bg-gray-700 text-sm">Cancel</button>
+                            <button @click="insertRow()" class="px-4 py-2 rounded bg-brand-600 text-white text-sm hover:bg-brand-700">Insert</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Loading -->
+                <div x-show="loading" class="space-y-2">
+                    <div class="skeleton h-8 rounded w-full"></div>
+                    <div class="skeleton h-6 rounded w-full" x-init=""></div>
+                    <div class="skeleton h-6 rounded w-full"></div>
+                    <div class="skeleton h-6 rounded w-full"></div>
+                </div>
+
+                <!-- Data grid -->
+                <div x-show="!loading && rows.length > 0" class="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                                <th class="py-2 px-2 w-8"><input type="checkbox" @change="toggleAllRows($event.target.checked)"></th>
+                                <template x-for="field in fields" :key="field.name">
+                                    <th class="py-2 px-3 text-left font-medium cursor-pointer hover:text-brand-600 whitespace-nowrap"
+                                        @click="toggleSort(field.name)">
+                                        <span x-text="field.name"></span>
+                                        <span x-show="sortCol === field.name" x-text="sortOrder === 'ASC' ? ' ↑' : ' ↓'" class="text-brand-500"></span>
+                                    </th>
+                                </template>
+                                <th class="py-2 px-2 w-16">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="(row, ri) in rows" :key="ri">
+                                <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                    <td class="py-1.5 px-2"><input type="checkbox" :value="ri" x-model="selectedRows"></td>
+                                    <template x-for="field in fields" :key="field.name">
+                                        <td class="py-1.5 px-3 max-w-xs truncate"
+                                            @dblclick="startEdit(ri, field.name, row[field.name])"
+                                            :title="row[field.name]">
+                                            <span x-show="editingCell !== ri + '-' + field.name">
+                                                <span x-show="row[field.name] === null" class="null-badge">NULL</span>
+                                                <span x-show="row[field.name] !== null" x-text="String(row[field.name]).substring(0, 200)"></span>
+                                            </span>
+                                            <input x-show="editingCell === ri + '-' + field.name"
+                                                   type="text" x-model="editValue"
+                                                   @keydown.enter="saveEdit(ri, field.name)"
+                                                   @keydown.escape="editingCell = null"
+                                                   @blur="saveEdit(ri, field.name)"
+                                                   class="w-full px-1 py-0.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 outline-none"
+                                                   x-ref="editInput">
+                                        </td>
+                                    </template>
+                                    <td class="py-1.5 px-2">
+                                        <button @click="deleteRow(row)" class="text-red-500 hover:text-red-700 text-xs">Delete</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Empty state -->
+                <div x-show="!loading && rows.length === 0" class="text-center py-12 text-gray-500">
+                    <p>No data in this table</p>
+                </div>
+
+                <!-- Pagination -->
+                <div x-show="pagination.pages > 1" class="flex items-center justify-between mt-3 text-sm">
+                    <div class="text-gray-500">
+                        <span x-text="pagination.total.toLocaleString()"></span> rows &middot; Page <span x-text="pagination.page"></span> of <span x-text="pagination.pages"></span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button @click="pagination.page > 1 && (pagination.page--, loadData())" :disabled="pagination.page <= 1"
+                                class="px-3 py-1 border rounded hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50">Prev</button>
+                        <select x-model="pagination.limit" @change="pagination.page = 1; loadData()" class="px-2 py-1 border rounded dark:bg-gray-700 dark:border-gray-600 outline-none">
+                            <option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option>
+                        </select>
+                        <button @click="pagination.page < pagination.pages && (pagination.page++, loadData())" :disabled="pagination.page >= pagination.pages"
+                                class="px-3 py-1 border rounded hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50">Next</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- STRUCTURE VIEW -->
+            <div x-show="$store.app.currentView === 'structure'" x-data="structureViewer()" x-init="$watch('$store.app.currentTable', () => { if($store.app.currentView === 'structure') loadStructure(); })">
+                <div class="flex items-center gap-3 mb-4">
+                    <h2 class="text-xl font-bold" x-text="$store.app.currentTable"></h2>
+                    <div class="flex border rounded-lg overflow-hidden text-sm">
+                        <button @click="$store.app.navigate('data', $store.app.currentDb, $store.app.currentTable)" class="px-3 py-1 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600">Data</button>
+                        <button @click="$store.app.navigate('structure', $store.app.currentDb, $store.app.currentTable)" class="px-3 py-1 bg-brand-600 text-white">Structure</button>
+                    </div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="flex gap-4 border-b border-gray-200 dark:border-gray-700 mb-4 text-sm">
+                    <button @click="tab = 'columns'" :class="tab === 'columns' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Columns</button>
+                    <button @click="tab = 'indexes'" :class="tab === 'indexes' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Indexes</button>
+                    <button @click="tab = 'foreign_keys'" :class="tab === 'foreign_keys' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Foreign Keys</button>
+                    <button @click="tab = 'sql'" :class="tab === 'sql' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">SQL</button>
+                </div>
+
+                <!-- Columns tab -->
+                <div x-show="tab === 'columns'" class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="border-b border-gray-200 dark:border-gray-700 text-left">
+                            <th class="py-2 px-3">#</th><th class="py-2 px-3">Name</th><th class="py-2 px-3">Type</th><th class="py-2 px-3">Nullable</th><th class="py-2 px-3">Key</th><th class="py-2 px-3">Default</th><th class="py-2 px-3">Extra</th><th class="py-2 px-3">Comment</th>
+                        </tr></thead>
+                        <tbody>
+                            <template x-for="col in structure.columns" :key="col.name">
+                                <tr class="border-b border-gray-100 dark:border-gray-800">
+                                    <td class="py-1.5 px-3 text-gray-400" x-text="col.position"></td>
+                                    <td class="py-1.5 px-3 font-medium" x-text="col.name"></td>
+                                    <td class="py-1.5 px-3 text-purple-600 dark:text-purple-400 font-mono text-xs" x-text="col.column_type"></td>
+                                    <td class="py-1.5 px-3" x-text="col.nullable"></td>
+                                    <td class="py-1.5 px-3"><span x-show="col.key_type" x-text="col.key_type" class="px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200 text-xs rounded"></span></td>
+                                    <td class="py-1.5 px-3 text-gray-500 text-xs" x-text="col.default_value ?? 'NULL'"></td>
+                                    <td class="py-1.5 px-3 text-xs text-gray-500" x-text="col.extra"></td>
+                                    <td class="py-1.5 px-3 text-xs text-gray-400" x-text="col.comment"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Indexes tab -->
+                <div x-show="tab === 'indexes'" class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="border-b border-gray-200 dark:border-gray-700 text-left">
+                            <th class="py-2 px-3">Name</th><th class="py-2 px-3">Column</th><th class="py-2 px-3">Type</th><th class="py-2 px-3">Unique</th><th class="py-2 px-3">Cardinality</th>
+                        </tr></thead>
+                        <tbody>
+                            <template x-for="idx in structure.indexes" :key="idx.name + idx.column_name">
+                                <tr class="border-b border-gray-100 dark:border-gray-800">
+                                    <td class="py-1.5 px-3 font-medium" x-text="idx.name"></td>
+                                    <td class="py-1.5 px-3" x-text="idx.column_name"></td>
+                                    <td class="py-1.5 px-3 text-xs" x-text="idx.type"></td>
+                                    <td class="py-1.5 px-3" x-text="idx.non_unique == '0' ? 'Yes' : 'No'"></td>
+                                    <td class="py-1.5 px-3" x-text="idx.cardinality"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Foreign Keys tab -->
+                <div x-show="tab === 'foreign_keys'" class="overflow-x-auto">
+                    <div x-show="structure.foreign_keys.length === 0" class="text-center py-8 text-gray-500">No foreign keys</div>
+                    <table x-show="structure.foreign_keys.length > 0" class="w-full text-sm">
+                        <thead><tr class="border-b border-gray-200 dark:border-gray-700 text-left">
+                            <th class="py-2 px-3">Name</th><th class="py-2 px-3">Column</th><th class="py-2 px-3">References</th><th class="py-2 px-3">On Update</th><th class="py-2 px-3">On Delete</th>
+                        </tr></thead>
+                        <tbody>
+                            <template x-for="fk in structure.foreign_keys" :key="fk.name + fk.column_name">
+                                <tr class="border-b border-gray-100 dark:border-gray-800">
+                                    <td class="py-1.5 px-3 font-medium" x-text="fk.name"></td>
+                                    <td class="py-1.5 px-3" x-text="fk.column_name"></td>
+                                    <td class="py-1.5 px-3 text-brand-600 cursor-pointer hover:underline"
+                                        @click="$store.app.navigate('data', fk.ref_schema, fk.ref_table)"
+                                        x-text="fk.ref_table + '.' + fk.ref_column"></td>
+                                    <td class="py-1.5 px-3 text-xs" x-text="fk.on_update"></td>
+                                    <td class="py-1.5 px-3 text-xs" x-text="fk.on_delete"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- SQL tab -->
+                <div x-show="tab === 'sql'">
+                    <pre class="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 text-sm font-mono overflow-x-auto whitespace-pre" x-text="structure.create_statement"></pre>
+                </div>
+            </div>
+
+            <!-- SQL EDITOR VIEW -->
+            <div x-show="$store.app.currentView === 'query'" x-data="queryEditor()"
+                 @keydown.ctrl.enter.prevent="executeQuery()" @keydown.meta.enter.prevent="executeQuery()">
+                <h2 class="text-xl font-bold mb-3">SQL Editor <span class="text-sm font-normal text-gray-500" x-show="$store.app.currentDb" x-text="'— ' + $store.app.currentDb"></span></h2>
+
+                <div class="mb-3">
+                    <textarea x-model="sql" rows="6" placeholder="SELECT * FROM ..."
+                              class="w-full px-3 py-2 font-mono text-sm border rounded-lg dark:bg-gray-800 dark:border-gray-600 outline-none focus:ring-2 focus:ring-brand-500 resize-y"></textarea>
+                </div>
+
+                <div class="flex items-center gap-2 mb-4">
+                    <button @click="executeQuery()" class="px-4 py-2 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700">
+                        Execute <span class="text-xs opacity-70">(Ctrl+Enter)</span>
+                    </button>
+                    <button @click="explainQuery()" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Explain</button>
+                    <button @click="showHistory = !showHistory" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">History</button>
+                    <span x-show="lastElapsed" class="text-sm text-gray-500">
+                        Executed in <span x-text="lastElapsed"></span>ms
+                    </span>
+                </div>
+
+                <!-- History panel -->
+                <div x-show="showHistory" class="mb-4 border border-gray-200 dark:border-gray-700 rounded-lg p-3 max-h-48 overflow-auto">
+                    <h4 class="text-sm font-medium mb-2">Query History</h4>
+                    <template x-for="(h, i) in history" :key="i">
+                        <div class="flex items-center justify-between py-1 border-b border-gray-100 dark:border-gray-800 text-xs">
+                            <span class="font-mono truncate flex-1 mr-2 cursor-pointer hover:text-brand-600" @click="sql = h.sql" x-text="h.sql"></span>
+                            <span class="text-gray-400 shrink-0" x-text="h.elapsed + 'ms'"></span>
+                        </div>
+                    </template>
+                    <div x-show="history.length === 0" class="text-xs text-gray-400">No history yet</div>
+                </div>
+
+                <!-- Results -->
+                <div x-show="result">
+                    <div x-show="result?.error" class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-400 mb-3" x-text="result?.error"></div>
+                    <div x-show="result?.message && !result?.error" class="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3 text-sm text-green-700 dark:text-green-400 mb-3" x-text="result?.message"></div>
+
+                    <div x-show="result?.rows?.length > 0" class="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                                    <template x-for="field in result?.fields || []" :key="field.name">
+                                        <th class="py-2 px-3 text-left font-medium whitespace-nowrap" x-text="field.name"></th>
+                                    </template>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(row, ri) in result?.rows || []" :key="ri">
+                                    <tr class="border-b border-gray-100 dark:border-gray-800">
+                                        <template x-for="field in result?.fields || []" :key="field.name">
+                                            <td class="py-1.5 px-3 max-w-xs truncate">
+                                                <span x-show="row[field.name] === null" class="null-badge">NULL</span>
+                                                <span x-show="row[field.name] !== null" x-text="String(row[field.name]).substring(0, 200)"></span>
+                                            </td>
+                                        </template>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div x-show="result?.row_count > 0" class="mt-2 text-sm text-gray-500">
+                        <span x-text="result?.row_count"></span> rows returned
+                    </div>
+                </div>
+            </div>
+
+            <!-- EXPORT VIEW -->
+            <div x-show="$store.app.currentView === 'export'" x-data="exportPanel()">
+                <h2 class="text-xl font-bold mb-4">Export <span class="text-sm font-normal text-gray-500" x-text="'— ' + $store.app.currentDb"></span></h2>
+                <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6 max-w-lg">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-1">Format</label>
+                            <select x-model="format" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none">
+                                <option value="sql">SQL</option><option value="csv">CSV</option><option value="json">JSON</option>
+                            </select>
+                        </div>
+                        <div x-show="format !== 'sql'">
+                            <label class="block text-sm font-medium mb-1">Table</label>
+                            <select x-model="selectedTable" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none">
+                                <template x-for="tbl in $store.app.tables" :key="tbl.name">
+                                    <option :value="tbl.name" x-text="tbl.name"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div x-show="format === 'sql'" class="space-y-2">
+                            <label class="flex items-center gap-2 text-sm"><input type="checkbox" x-model="includeStructure"> Include structure</label>
+                            <label class="flex items-center gap-2 text-sm"><input type="checkbox" x-model="includeData"> Include data</label>
+                            <label class="flex items-center gap-2 text-sm"><input type="checkbox" x-model="addDropTable"> Add DROP TABLE</label>
+                        </div>
+                    </div>
+                    <button @click="doExport()" class="mt-4 px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm">Download Export</button>
+                </div>
+            </div>
+
+            <!-- IMPORT VIEW -->
+            <div x-show="$store.app.currentView === 'import'" x-data="importPanel()">
+                <h2 class="text-xl font-bold mb-4">Import <span class="text-sm font-normal text-gray-500" x-text="'— ' + $store.app.currentDb"></span></h2>
+                <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6 max-w-lg">
+                    <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 text-center"
+                         @dragover.prevent="dragOver = true" @dragleave="dragOver = false"
+                         @drop.prevent="dragOver = false; handleDrop($event)"
+                         :class="dragOver ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : ''">
+                        <svg class="mx-auto w-12 h-12 text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                        <p class="text-gray-500 mb-2">Drag & drop a file here, or</p>
+                        <label class="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm cursor-pointer">
+                            Choose File
+                            <input type="file" class="hidden" accept=".sql,.csv,.json" @change="handleFile($event.target.files[0])">
+                        </label>
+                        <p class="text-xs text-gray-400 mt-2">Supported: SQL, CSV, JSON (max 50MB)</p>
+                    </div>
+                    <div x-show="fileName" class="mt-3 text-sm text-gray-600 dark:text-gray-400">
+                        Selected: <span x-text="fileName" class="font-medium"></span>
+                    </div>
+                    <div x-show="importing" class="mt-3">
+                        <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                            <div class="bg-brand-600 h-2 rounded-full transition-all" :style="'width: ' + progress + '%'"></div>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">Importing... <span x-text="progress"></span>%</p>
+                    </div>
+                    <div x-show="importResult" class="mt-3 p-3 rounded-lg text-sm" :class="importResult?.failed > 0 ? 'bg-yellow-50 dark:bg-yellow-900/20' : 'bg-green-50 dark:bg-green-900/20'">
+                        <p>Executed: <span x-text="importResult?.executed"></span> / <span x-text="importResult?.total_statements || importResult?.total_rows"></span></p>
+                        <p x-show="importResult?.failed > 0" class="text-red-600">Failed: <span x-text="importResult?.failed"></span></p>
+                    </div>
+                    <button x-show="file && !importing" @click="doImport()" class="mt-4 px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm">Start Import</button>
+                </div>
+            </div>
+
+            <!-- SERVER STATUS VIEW -->
+            <div x-show="$store.app.currentView === 'server-status'" x-data="serverStatus()">
+                <h2 class="text-xl font-bold mb-4">Server Status</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                        <div class="text-sm text-gray-500">Uptime</div>
+                        <div class="text-2xl font-bold mt-1" x-text="$store.app.formatDuration(status.uptime_seconds || 0)"></div>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                        <div class="text-sm text-gray-500">Queries/sec</div>
+                        <div class="text-2xl font-bold mt-1" x-text="status.queries_per_second || 0"></div>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                        <div class="text-sm text-gray-500">Connections</div>
+                        <div class="text-2xl font-bold mt-1" x-text="status.threads_connected || 0"></div>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                        <div class="text-sm text-gray-500">Slow Queries</div>
+                        <div class="text-2xl font-bold mt-1" x-text="status.slow_queries || 0"></div>
+                    </div>
+                </div>
+                <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                    <h3 class="font-medium mb-2">Server Info</h3>
+                    <div class="grid grid-cols-2 gap-2 text-sm">
+                        <div class="text-gray-500">Version</div><div x-text="status.server?.version"></div>
+                        <div class="text-gray-500">Charset</div><div x-text="status.server?.charset"></div>
+                        <div class="text-gray-500">Total Queries</div><div x-text="Number(status.total_queries || 0).toLocaleString()"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SERVER VARIABLES VIEW -->
+            <div x-show="$store.app.currentView === 'server-variables'" x-data="serverVariables()">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold">Server Variables</h2>
+                    <input type="text" x-model="search" @input.debounce.300ms="loadVars()" placeholder="Search variables..."
+                           class="px-3 py-1.5 text-sm border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none w-64">
+                </div>
+                <div class="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                    <table class="w-full text-sm">
+                        <thead><tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                            <th class="py-2 px-3 text-left font-medium">Variable</th>
+                            <th class="py-2 px-3 text-left font-medium">Value</th>
+                        </tr></thead>
+                        <tbody>
+                            <template x-for="v in variables" :key="v.Variable_name">
+                                <tr class="border-b border-gray-100 dark:border-gray-800">
+                                    <td class="py-1.5 px-3 font-mono text-xs" x-text="v.Variable_name"></td>
+                                    <td class="py-1.5 px-3 text-xs break-all" x-text="v.Value"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- PROCESSES VIEW -->
+            <div x-show="$store.app.currentView === 'server-processes'" x-data="processViewer()">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold">Process List</h2>
+                    <button @click="loadProcesses()" class="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Refresh</button>
+                </div>
+                <div class="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                    <table class="w-full text-sm">
+                        <thead><tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-left">
+                            <th class="py-2 px-3">ID</th><th class="py-2 px-3">User</th><th class="py-2 px-3">Host</th><th class="py-2 px-3">DB</th><th class="py-2 px-3">Command</th><th class="py-2 px-3">Time</th><th class="py-2 px-3">Info</th><th class="py-2 px-3">Action</th>
+                        </tr></thead>
+                        <tbody>
+                            <template x-for="p in processes" :key="p.Id">
+                                <tr class="border-b border-gray-100 dark:border-gray-800">
+                                    <td class="py-1.5 px-3" x-text="p.Id"></td>
+                                    <td class="py-1.5 px-3" x-text="p.User"></td>
+                                    <td class="py-1.5 px-3 text-xs" x-text="p.Host"></td>
+                                    <td class="py-1.5 px-3" x-text="p.db"></td>
+                                    <td class="py-1.5 px-3" x-text="p.Command"></td>
+                                    <td class="py-1.5 px-3" x-text="p.Time"></td>
+                                    <td class="py-1.5 px-3 text-xs max-w-xs truncate" x-text="p.Info"></td>
+                                    <td class="py-1.5 px-3">
+                                        <button @click="killProcess(p.Id)" class="text-red-500 hover:text-red-700 text-xs">Kill</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- USERS VIEW -->
+            <div x-show="$store.app.currentView === 'users'" x-data="userManager()">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold">User Management</h2>
+                    <button @click="showCreate = true" class="px-3 py-1.5 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700">Create User</button>
+                </div>
+
+                <!-- Create user dialog -->
+                <div x-show="showCreate" class="fixed inset-0 z-40 flex items-center justify-center bg-black/50" x-cloak>
+                    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-md mx-4 w-full">
+                        <h3 class="text-lg font-semibold mb-4">Create User</h3>
+                        <div class="space-y-3">
+                            <div><label class="block text-sm font-medium mb-1">Username</label>
+                                <input type="text" x-model="newUser" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none"></div>
+                            <div><label class="block text-sm font-medium mb-1">Host</label>
+                                <input type="text" x-model="newHost" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none" value="%"></div>
+                            <div><label class="block text-sm font-medium mb-1">Password</label>
+                                <input type="password" x-model="newPass" class="w-full px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none"></div>
+                        </div>
+                        <div class="flex justify-end gap-2 mt-4">
+                            <button @click="showCreate = false" class="px-4 py-2 rounded bg-gray-200 dark:bg-gray-700 text-sm">Cancel</button>
+                            <button @click="createUser()" class="px-4 py-2 rounded bg-brand-600 text-white text-sm hover:bg-brand-700">Create</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
+                    <table class="w-full text-sm">
+                        <thead><tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-left">
+                            <th class="py-2 px-3">User</th><th class="py-2 px-3">Host</th><th class="py-2 px-3">Status</th><th class="py-2 px-3">Actions</th>
+                        </tr></thead>
+                        <tbody>
+                            <template x-for="u in users" :key="u.User + u.Host">
+                                <tr class="border-b border-gray-100 dark:border-gray-800">
+                                    <td class="py-1.5 px-3 font-medium" x-text="u.User"></td>
+                                    <td class="py-1.5 px-3" x-text="u.Host"></td>
+                                    <td class="py-1.5 px-3">
+                                        <span x-show="u.account_locked === 'Y'" class="text-xs text-red-500">Locked</span>
+                                        <span x-show="u.account_locked !== 'Y'" class="text-xs text-green-500">Active</span>
+                                    </td>
+                                    <td class="py-1.5 px-3">
+                                        <button @click="viewPrivileges(u.User, u.Host)" class="text-xs text-brand-600 hover:underline mr-2">Privileges</button>
+                                        <button @click="dropUser(u.User, u.Host)" class="text-xs text-red-500 hover:text-red-700">Drop</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Privileges display -->
+                <div x-show="selectedUser" class="mt-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                    <h3 class="font-medium mb-2">Privileges for <span x-text="selectedUser"></span></h3>
+                    <template x-for="(g, i) in grants" :key="i">
+                        <pre class="text-xs font-mono bg-gray-50 dark:bg-gray-900 p-2 rounded mb-1" x-text="g"></pre>
+                    </template>
+                </div>
+            </div>
+
+            <!-- ROUTINES VIEW -->
+            <div x-show="$store.app.currentView === 'routines'" x-data="routineViewer()">
+                <h2 class="text-xl font-bold mb-4">Routines <span class="text-sm font-normal text-gray-500" x-text="'— ' + $store.app.currentDb"></span></h2>
+                <div class="flex gap-4 border-b border-gray-200 dark:border-gray-700 mb-4 text-sm">
+                    <button @click="tab = 'procedures'" :class="tab === 'procedures' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Procedures</button>
+                    <button @click="tab = 'functions'" :class="tab === 'functions' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Functions</button>
+                    <button @click="tab = 'triggers'" :class="tab === 'triggers' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Triggers</button>
+                    <button @click="tab = 'events'" :class="tab === 'events' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Events</button>
+                    <button @click="tab = 'views'" :class="tab === 'views' ? 'border-b-2 border-brand-600 text-brand-600 font-medium' : 'text-gray-500'" class="pb-2">Views</button>
+                </div>
+
+                <template x-for="item in (routines[tab] || [])" :key="item.Name || item.TABLE_NAME || item.TRIGGER_NAME || item.EVENT_NAME">
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 mb-2">
+                        <div class="font-medium text-sm" x-text="item.Name || item.TABLE_NAME || item.TRIGGER_NAME || item.EVENT_NAME"></div>
+                        <div class="text-xs text-gray-500 mt-1" x-text="item.Type || item.EVENT_MANIPULATION || item.STATUS || ''"></div>
+                    </div>
+                </template>
+                <div x-show="(routines[tab] || []).length === 0" class="text-center py-8 text-gray-500 text-sm">
+                    No <span x-text="tab"></span> found
+                </div>
+            </div>
+
+            <!-- SCHEMA COMPARE VIEW -->
+            <div x-show="$store.app.currentView === 'schema-compare'" x-data="schemaCompare()">
+                <h2 class="text-xl font-bold mb-4">Schema Compare</h2>
+                <div class="flex gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Source Database</label>
+                        <select x-model="sourceDb" class="px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none">
+                            <template x-for="db in $store.app.databases" :key="db.name">
+                                <option :value="db.name" x-text="db.name"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Target Database</label>
+                        <select x-model="targetDb" class="px-3 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 outline-none">
+                            <template x-for="db in $store.app.databases" :key="db.name">
+                                <option :value="db.name" x-text="db.name"></option>
+                            </template>
+                        </select>
+                    </div>
+                    <div class="self-end">
+                        <button @click="compare()" class="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm">Compare</button>
+                    </div>
+                </div>
+
+                <div x-show="diff">
+                    <div x-show="diff?.only_in_source?.length > 0" class="mb-3">
+                        <h4 class="text-sm font-medium text-green-600 mb-1">Only in source:</h4>
+                        <template x-for="t in diff.only_in_source" :key="t"><span class="inline-block px-2 py-0.5 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded mr-1 mb-1" x-text="t"></span></template>
+                    </div>
+                    <div x-show="diff?.only_in_target?.length > 0" class="mb-3">
+                        <h4 class="text-sm font-medium text-red-600 mb-1">Only in target:</h4>
+                        <template x-for="t in diff.only_in_target" :key="t"><span class="inline-block px-2 py-0.5 bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 text-xs rounded mr-1 mb-1" x-text="t"></span></template>
+                    </div>
+                    <div x-show="diff?.different?.length > 0" class="mb-3">
+                        <h4 class="text-sm font-medium text-yellow-600 mb-1">Different tables:</h4>
+                        <template x-for="d in diff.different" :key="d.table">
+                            <div class="mb-2 p-2 border border-yellow-200 dark:border-yellow-800 rounded text-sm">
+                                <span class="font-medium" x-text="d.table"></span>: <span x-text="d.changes.length"></span> change(s)
+                            </div>
+                        </template>
+                    </div>
+                    <div x-show="diff?.alter_statements?.length > 0" class="mt-4">
+                        <h4 class="text-sm font-medium mb-2">Generated ALTER Statements</h4>
+                        <pre class="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 text-xs font-mono overflow-x-auto whitespace-pre"><template x-for="stmt in diff.alter_statements" :key="stmt"><span x-text="stmt + '\n'"></span></template></pre>
+                        <button @click="navigator.clipboard.writeText(diff.alter_statements.join('\n')); $store.toast.success('Copied to clipboard')"
+                                class="mt-2 px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-sm rounded hover:bg-gray-300 dark:hover:bg-gray-600">Copy to Clipboard</button>
+                    </div>
+                    <div x-show="diff?.identical?.length > 0" class="mt-3 text-sm text-gray-500">
+                        <span x-text="diff.identical.length"></span> identical table(s)
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Footer Status Bar -->
+    <footer class="bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 px-4 py-1 text-xs text-gray-500 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-4">
+            <span>Connected: <span x-text="$store.app.username + '@' + $store.app.host"></span></span>
+            <span x-show="$store.app.serverInfo" x-text="$store.app.serverInfo?.is_mariadb ? 'MariaDB' : 'MySQL'"></span>
+        </div>
+        <div>DataBrowse v{{VERSION}}</div>
+    </footer>
+</div>
+
+<!-- ==================== ALPINE COMPONENTS ==================== -->
+<script nonce="{{CSP_NONCE}}">
+
+function databaseList() {
+    return {
+        showCreateDialog: false,
+        newDbName: '', newDbCharset: 'utf8mb4', newDbCollation: 'utf8mb4_unicode_ci',
+        async createDb() {
+            try {
+                await Alpine.store('app').api('POST', 'api/databases', {
+                    name: this.newDbName, charset: this.newDbCharset, collation: this.newDbCollation
+                });
+                Alpine.store('toast').success('Database created: ' + this.newDbName);
+                this.showCreateDialog = false;
+                this.newDbName = '';
+                await Alpine.store('app').fetchDatabases();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async dropDb(name) {
+            const ok = await Alpine.store('app').confirm('Drop Database', 'Are you sure you want to drop "' + name + '"? This action cannot be undone.');
+            if (!ok) return;
+            try {
+                await Alpine.store('app').api('DELETE', 'api/databases/' + encodeURIComponent(name));
+                Alpine.store('toast').success('Database dropped: ' + name);
+                await Alpine.store('app').fetchDatabases();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function tableList() {
+    return {
+        showCreateTable: false,
+        newTableName: '',
+        newTableColumns: [
+            { name: 'id', type: 'INT', length: '', primary: true, auto_increment: true, nullable: false },
+        ],
+        async createTable() {
+            try {
+                await Alpine.store('app').api('POST', 'api/tables/' + encodeURIComponent(Alpine.store('app').currentDb), {
+                    name: this.newTableName, columns: this.newTableColumns
+                });
+                Alpine.store('toast').success('Table created: ' + this.newTableName);
+                this.showCreateTable = false;
+                this.newTableName = '';
+                this.newTableColumns = [{ name: 'id', type: 'INT', length: '', primary: true, auto_increment: true, nullable: false }];
+                await Alpine.store('app').fetchTables(Alpine.store('app').currentDb);
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async dropTable(name) {
+            const ok = await Alpine.store('app').confirm('Drop Table', 'Are you sure you want to drop "' + name + '"?');
+            if (!ok) return;
+            try {
+                await Alpine.store('app').api('DELETE', 'api/tables/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(name));
+                Alpine.store('toast').success('Table dropped: ' + name);
+                await Alpine.store('app').fetchTables(Alpine.store('app').currentDb);
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async truncateTable(name) {
+            const ok = await Alpine.store('app').confirm('Truncate Table', 'Are you sure you want to truncate "' + name + '"? All data will be deleted.');
+            if (!ok) return;
+            try {
+                await Alpine.store('app').api('POST', 'api/tables/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(name) + '/truncate');
+                Alpine.store('toast').success('Table truncated: ' + name);
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function dataViewer() {
+    return {
+        rows: [], fields: [], pagination: { page: 1, limit: 25, total: 0, pages: 0 },
+        loading: false, search: '', sortCol: null, sortOrder: 'ASC',
+        selectedRows: [], editingCell: null, editValue: '',
+        showInsert: false, insertData: {},
+        init() { this.loadData(); },
+        async loadData() {
+            if (!Alpine.store('app').currentDb || !Alpine.store('app').currentTable) return;
+            this.loading = true;
+            try {
+                let url = 'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable);
+                url += '?page=' + this.pagination.page + '&limit=' + this.pagination.limit;
+                if (this.sortCol) url += '&sort=' + encodeURIComponent(this.sortCol) + '&order=' + this.sortOrder;
+                if (this.search) url += '&search=' + encodeURIComponent(this.search);
+                const data = await Alpine.store('app').api('GET', url);
+                this.rows = data.rows;
+                this.fields = data.fields;
+                this.pagination = data.pagination;
+                this.selectedRows = [];
+            } catch (e) { Alpine.store('toast').error(e.message); }
+            finally { this.loading = false; }
+        },
+        toggleSort(col) {
+            if (this.sortCol === col) {
+                this.sortOrder = this.sortOrder === 'ASC' ? 'DESC' : 'ASC';
+            } else {
+                this.sortCol = col;
+                this.sortOrder = 'ASC';
+            }
+            this.loadData();
+        },
+        toggleAllRows(checked) { this.selectedRows = checked ? this.rows.map((_, i) => String(i)) : []; },
+        startEdit(ri, field, value) {
+            this.editingCell = ri + '-' + field;
+            this.editValue = value === null ? '' : String(value);
+        },
+        async saveEdit(ri, field) {
+            if (this.editingCell === null) return;
+            this.editingCell = null;
+            const row = this.rows[ri];
+            const pkField = this.fields.find(f => f.isPrimary);
+            if (!pkField) { Alpine.store('toast').error('No primary key found'); return; }
+            const where = {};
+            this.fields.filter(f => f.isPrimary).forEach(f => { where[f.name] = row[f.name]; });
+            try {
+                await Alpine.store('app').api('PUT',
+                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/0',
+                    { row: { [field]: this.editValue || null }, where });
+                row[field] = this.editValue || null;
+                Alpine.store('toast').success('Row updated');
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async insertRow() {
+            try {
+                await Alpine.store('app').api('POST',
+                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable),
+                    { row: this.insertData });
+                Alpine.store('toast').success('Row inserted');
+                this.showInsert = false;
+                this.insertData = {};
+                this.loadData();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async deleteRow(row) {
+            const ok = await Alpine.store('app').confirm('Delete Row', 'Are you sure you want to delete this row?');
+            if (!ok) return;
+            const where = {};
+            this.fields.filter(f => f.isPrimary).forEach(f => { where[f.name] = row[f.name]; });
+            if (Object.keys(where).length === 0) {
+                this.fields.forEach(f => { where[f.name] = row[f.name]; });
+            }
+            try {
+                await Alpine.store('app').api('DELETE',
+                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/0',
+                    { where });
+                Alpine.store('toast').success('Row deleted');
+                this.loadData();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async batchDelete() {
+            const ok = await Alpine.store('app').confirm('Batch Delete', 'Delete ' + this.selectedRows.length + ' selected row(s)?');
+            if (!ok) return;
+            const rowsToDelete = this.selectedRows.map(i => {
+                const row = this.rows[parseInt(i)];
+                const where = {};
+                this.fields.filter(f => f.isPrimary).forEach(f => { where[f.name] = row[f.name]; });
+                if (Object.keys(where).length === 0) this.fields.forEach(f => { where[f.name] = row[f.name]; });
+                return where;
+            });
+            try {
+                await Alpine.store('app').api('POST',
+                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/batch-delete',
+                    { rows: rowsToDelete });
+                Alpine.store('toast').success('Rows deleted');
+                this.loadData();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function structureViewer() {
+    return {
+        tab: 'columns',
+        structure: { columns: [], indexes: [], foreign_keys: [], create_statement: '', status: {} },
+        init() { this.loadStructure(); },
+        async loadStructure() {
+            if (!Alpine.store('app').currentDb || !Alpine.store('app').currentTable) return;
+            try {
+                const data = await Alpine.store('app').api('GET',
+                    'api/tables/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/structure');
+                this.structure = data;
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function queryEditor() {
+    return {
+        sql: '', result: null, lastElapsed: null,
+        showHistory: false, history: [],
+        async executeQuery() {
+            if (!this.sql.trim()) return;
+            try {
+                const data = await Alpine.store('app').api('POST', 'api/query/execute', {
+                    sql: this.sql, database: Alpine.store('app').currentDb
+                });
+                this.result = data;
+                this.lastElapsed = data.elapsed_ms;
+                this.history.unshift({ sql: this.sql, elapsed: data.elapsed_ms, success: data.success });
+                if (this.history.length > 50) this.history.pop();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async explainQuery() {
+            if (!this.sql.trim()) return;
+            try {
+                const data = await Alpine.store('app').api('POST', 'api/query/explain', {
+                    sql: this.sql, database: Alpine.store('app').currentDb
+                });
+                this.result = data;
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function exportPanel() {
+    return {
+        format: 'sql', selectedTable: '', includeStructure: true, includeData: true, addDropTable: true,
+        init() { if (Alpine.store('app').tables.length > 0) this.selectedTable = Alpine.store('app').tables[0].name; },
+        async doExport() {
+            const app = Alpine.store('app');
+            const db = app.currentDb;
+            let url, body;
+            if (this.format === 'sql') {
+                url = 'api/export/sql';
+                body = { database: db, structure: this.includeStructure, data: this.includeData, drop_table: this.addDropTable };
+            } else {
+                url = 'api/export/' + this.format;
+                body = { database: db, table: this.selectedTable };
+            }
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': app.csrfToken || '' },
+                    body: JSON.stringify(body)
+                });
+                const blob = await res.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                const ext = this.format === 'sql' ? 'sql' : this.format;
+                a.download = (this.format === 'sql' ? db : this.selectedTable) + '.' + ext;
+                a.click();
+                URL.revokeObjectURL(a.href);
+                Alpine.store('toast').success('Export downloaded');
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function importPanel() {
+    return {
+        file: null, fileName: '', dragOver: false,
+        importing: false, progress: 0, importResult: null,
+        handleFile(f) { this.file = f; this.fileName = f.name; this.importResult = null; },
+        handleDrop(e) { const f = e.dataTransfer.files[0]; if (f) this.handleFile(f); },
+        async doImport() {
+            if (!this.file) return;
+            this.importing = true; this.progress = 0; this.importResult = null;
+            const ext = this.file.name.split('.').pop().toLowerCase();
+            const formData = new FormData();
+            formData.append('file', this.file);
+            formData.append('database', Alpine.store('app').currentDb);
+            if (ext === 'csv') {
+                formData.append('table', prompt('Enter target table name:') || '');
+            }
+            try {
+                const res = await fetch('api/import/' + (ext === 'csv' ? 'csv' : 'sql'), {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': Alpine.store('app').csrfToken || '' },
+                    body: formData
+                });
+                this.importResult = await res.json();
+                this.progress = 100;
+                Alpine.store('toast').success('Import complete');
+                Alpine.store('app').fetchTables(Alpine.store('app').currentDb);
+            } catch (e) { Alpine.store('toast').error(e.message); }
+            finally { this.importing = false; }
+        }
+    };
+}
+
+function serverStatus() {
+    return {
+        status: {},
+        init() { this.loadStatus(); },
+        async loadStatus() {
+            try {
+                this.status = await Alpine.store('app').api('GET', 'api/server/status');
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function serverVariables() {
+    return {
+        variables: [], search: '',
+        init() { this.loadVars(); },
+        async loadVars() {
+            try {
+                const url = 'api/server/variables' + (this.search ? '?search=' + encodeURIComponent(this.search) : '');
+                const data = await Alpine.store('app').api('GET', url);
+                this.variables = data.variables;
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function processViewer() {
+    return {
+        processes: [],
+        init() { this.loadProcesses(); },
+        async loadProcesses() {
+            try {
+                const data = await Alpine.store('app').api('GET', 'api/server/processes');
+                this.processes = data.processes;
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async killProcess(id) {
+            const ok = await Alpine.store('app').confirm('Kill Process', 'Kill process #' + id + '?');
+            if (!ok) return;
+            try {
+                await Alpine.store('app').api('POST', 'api/server/kill/' + id);
+                Alpine.store('toast').success('Process killed');
+                this.loadProcesses();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function userManager() {
+    return {
+        users: [], showCreate: false, newUser: '', newHost: '%', newPass: '',
+        selectedUser: null, grants: [],
+        init() { this.loadUsers(); },
+        async loadUsers() {
+            try {
+                const data = await Alpine.store('app').api('GET', 'api/users');
+                this.users = data.users;
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async createUser() {
+            try {
+                await Alpine.store('app').api('POST', 'api/users', {
+                    user: this.newUser, host: this.newHost, password: this.newPass
+                });
+                Alpine.store('toast').success('User created: ' + this.newUser);
+                this.showCreate = false; this.newUser = ''; this.newPass = '';
+                this.loadUsers();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async dropUser(user, host) {
+            const ok = await Alpine.store('app').confirm('Drop User', 'Drop user "' + user + '"@"' + host + '"?');
+            if (!ok) return;
+            try {
+                await Alpine.store('app').api('DELETE', 'api/users/' + encodeURIComponent(user) + '/' + encodeURIComponent(host));
+                Alpine.store('toast').success('User dropped');
+                this.loadUsers();
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async viewPrivileges(user, host) {
+            this.selectedUser = user + '@' + host;
+            try {
+                const data = await Alpine.store('app').api('GET', 'api/users/' + encodeURIComponent(user) + '/' + encodeURIComponent(host) + '/privileges');
+                this.grants = data.privileges?.grants || [];
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function routineViewer() {
+    return {
+        tab: 'procedures', routines: {},
+        init() { this.loadRoutines(); },
+        async loadRoutines() {
+            if (!Alpine.store('app').currentDb) return;
+            try {
+                this.routines = await Alpine.store('app').api('GET', 'api/routines/' + encodeURIComponent(Alpine.store('app').currentDb));
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+function schemaCompare() {
+    return {
+        sourceDb: '', targetDb: '', diff: null,
+        async compare() {
+            if (!this.sourceDb || !this.targetDb) return;
+            try {
+                this.diff = await Alpine.store('app').api('POST', 'api/schema/compare', {
+                    source: this.sourceDb, target: this.targetDb
+                });
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        }
+    };
+}
+
+</script>
+
+</body>
+</html>
