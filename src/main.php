@@ -260,7 +260,8 @@ $router->get('/api/data/{db}/{table}', function (array $params) use ($authMiddle
 
     $page = max(1, (int)($_GET['page'] ?? 1));
     $limit = min(500, max(1, (int)($_GET['limit'] ?? $config['ui']['rows_per_page'])));
-    $sort = $_GET['sort'] ?? null;
+    $sort = isset($_GET['sort']) && $_GET['sort'] !== '' ? $_GET['sort'] : null;
+    if ($sort) { Security::sanitizeIdentifier($sort); } // Validate column name
     $order = $_GET['order'] ?? 'ASC';
     $search = $_GET['search'] ?? null;
 
