@@ -32,9 +32,10 @@ final class SQLExporter {
         yield "SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n\n";
 
         if ($addCreateDatabase) {
-            yield "CREATE DATABASE IF NOT EXISTS `{$database}` "
+            $escapedDb = str_replace('`', '``', $database);
+            yield "CREATE DATABASE IF NOT EXISTS `{$escapedDb}` "
                 . "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n";
-            yield "USE `{$database}`;\n\n";
+            yield "USE `{$escapedDb}`;\n\n";
         }
 
         if (empty($tables)) {
@@ -43,16 +44,17 @@ final class SQLExporter {
         }
 
         foreach ($tables as $table) {
+            $escaped = str_replace('`', '``', $table);
             yield "-- ------------------------------------------------\n";
-            yield "-- Table: `{$table}`\n";
+            yield "-- Table: `{$escaped}`\n";
             yield "-- ------------------------------------------------\n\n";
 
             if ($addDropTable) {
-                yield "DROP TABLE IF EXISTS `{$table}`;\n\n";
+                yield "DROP TABLE IF EXISTS `{$escaped}`;\n\n";
             }
 
             if ($includeStructure) {
-                $create = $this->conn->query("SHOW CREATE TABLE `{$table}`");
+                $create = $this->conn->query("SHOW CREATE TABLE `{$escaped}`");
                 $row = $create->fetch_assoc();
                 yield ($row['Create Table'] ?? $row['Create View']) . ";\n\n";
             }
@@ -66,14 +68,15 @@ final class SQLExporter {
     }
 
     private function exportTableData(string $table, int $chunkSize): \Generator {
-        $count = $this->conn->query("SELECT COUNT(*) as c FROM `{$table}`")
+        $escaped = str_replace('`', '``', $table);
+        $count = $this->conn->query("SELECT COUNT(*) as c FROM `{$escaped}`")
             ->fetch_assoc()['c'];
 
         if ((int)$count === 0) return;
 
-        $result = $this->conn->query("SELECT * FROM `{$table}`", MYSQLI_USE_RESULT);
+        $result = $this->conn->query("SELECT * FROM `{$escaped}`", MYSQLI_USE_RESULT);
         $fields = $result->fetch_fields();
-        $fieldNames = array_map(fn($f) => "`{$f->name}`", $fields);
+        $fieldNames = array_map(fn($f) => "`" . str_replace('`', '``', $f->name) . "`", $fields);
         $header = implode(', ', $fieldNames);
 
         $batch = [];
@@ -94,7 +97,7 @@ final class SQLExporter {
             $batchCount++;
 
             if ($batchCount >= $chunkSize) {
-                yield "INSERT INTO `{$table}` ({$header}) VALUES\n"
+                yield "INSERT INTO `{$escaped}` ({$header}) VALUES\n"
                     . implode(",\n", $batch) . ";\n\n";
                 $batch = [];
                 $batchCount = 0;
@@ -102,7 +105,7 @@ final class SQLExporter {
         }
 
         if (!empty($batch)) {
-            yield "INSERT INTO `{$table}` ({$header}) VALUES\n"
+            yield "INSERT INTO `{$escaped}` ({$header}) VALUES\n"
                 . implode(",\n", $batch) . ";\n\n";
         }
 
@@ -125,7 +128,8 @@ final class CSVExporter {
 
     public function export(string $database, string $table): \Generator {
         $this->conn->select_db($database);
-        $result = $this->conn->query("SELECT * FROM `{$table}`", MYSQLI_USE_RESULT);
+        $escaped = str_replace('`', '``', $table);
+        $result = $this->conn->query("SELECT * FROM `{$escaped}`", MYSQLI_USE_RESULT);
 
         // Header row
         $fields = $result->fetch_fields();
@@ -150,7 +154,8 @@ final class JSONExporter {
 
     public function export(string $database, string $table): \Generator {
         $this->conn->select_db($database);
-        $result = $this->conn->query("SELECT * FROM `{$table}`", MYSQLI_USE_RESULT);
+        $escaped = str_replace('`', '``', $table);
+        $result = $this->conn->query("SELECT * FROM `{$escaped}`", MYSQLI_USE_RESULT);
 
         yield "[\n";
         $first = true;

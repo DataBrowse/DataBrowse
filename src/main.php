@@ -113,6 +113,21 @@ $authMiddleware = function () use ($config): ?array {
         }
     }
 
+    // Read-only mode: block write operations
+    if ($config['security']['read_only_mode'] && in_array($method, ['POST', 'PUT', 'DELETE', 'PATCH'])) {
+        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        // Allow login/logout/export/query(read)/explain even in read-only mode
+        $writeExempt = ['/api/auth/', '/api/export/', '/api/query/explain'];
+        $isExempt = false;
+        foreach ($writeExempt as $prefix) {
+            if (str_contains($uri, $prefix)) { $isExempt = true; break; }
+        }
+        if (!$isExempt) {
+            http_response_code(403);
+            return ['error' => 'Server is in read-only mode. Write operations are disabled.'];
+        }
+    }
+
     return null; // Auth passed
 };
 

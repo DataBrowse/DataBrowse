@@ -1364,6 +1364,10 @@ function exportPanel() {
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': app.csrfToken || '' },
                     body: JSON.stringify(body)
                 });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({ error: 'Export failed' }));
+                    throw new Error(err.error || 'Export failed');
+                }
                 const blob = await res.blob();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
@@ -1399,7 +1403,9 @@ function importPanel() {
                     headers: { 'X-CSRF-Token': Alpine.store('app').csrfToken || '' },
                     body: formData
                 });
-                this.importResult = await res.json();
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Import failed');
+                this.importResult = data;
                 this.progress = 100;
                 Alpine.store('toast').success('Import complete');
                 Alpine.store('app').fetchTables(Alpine.store('app').currentDb);
