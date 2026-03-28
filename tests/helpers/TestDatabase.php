@@ -1,7 +1,15 @@
 <?php
 declare(strict_types=1);
 
-// Bootstrap for tests — load source files
+// Tell bootstrap.php we're in test mode — skip runtime initialization
+define('DATABROWSE_TESTING', true);
+
+// Initialize session superglobal for tests
+if (!isset($_SESSION)) $_SESSION = [];
+if (!isset($_SERVER['REQUEST_URI'])) $_SERVER['REQUEST_URI'] = '/';
+if (!isset($_SERVER['REMOTE_ADDR'])) $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+
+// Load source files
 require_once __DIR__ . '/../../src/bootstrap.php';
 require_once __DIR__ . '/../../src/Helpers.php';
 require_once __DIR__ . '/../../src/Security.php';
@@ -15,6 +23,10 @@ require_once __DIR__ . '/../../src/ImportEngine.php';
 require_once __DIR__ . '/../../src/UserManager.php';
 require_once __DIR__ . '/../../src/ServerInfo.php';
 require_once __DIR__ . '/../../src/SchemaCompare.php';
+
+// Restore PHPUnit's error handling (bootstrap.php overrides it)
+restore_error_handler();
+restore_exception_handler();
 
 final class TestDatabase {
     private static ?string $dbName = null;
@@ -35,7 +47,6 @@ final class TestDatabase {
         $conn->query("CREATE DATABASE `" . self::$dbName . "` CHARACTER SET utf8mb4");
         $conn->select_db(self::$dbName);
 
-        // Create test tables
         $conn->query("CREATE TABLE users (
             id INT AUTO_INCREMENT PRIMARY KEY,
             username VARCHAR(50) NOT NULL,
@@ -55,7 +66,6 @@ final class TestDatabase {
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB");
 
-        // Insert test data
         $conn->query("INSERT INTO users (username, email, age) VALUES
             ('admin', 'admin@example.com', 30),
             ('john', 'john@example.com', 25),

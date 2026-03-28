@@ -21,7 +21,8 @@
     };
     </script>
 
-    <!-- Alpine.js -->
+    <!-- Alpine.js Plugins + Core -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3/dist/cdn.min.js" nonce="{{CSP_NONCE}}"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" nonce="{{CSP_NONCE}}"></script>
 
     <!-- CodeMirror 6 via CDN -->
@@ -216,12 +217,13 @@ document.addEventListener('alpine:init', () => {
         },
     });
 
-    // Check auth status on load
+    // Check auth status on load (restore session after page reload)
     fetch('api/auth/status').then(r => r.json()).then(data => {
         if (data.authenticated) {
             Alpine.store('app').authenticated = true;
             Alpine.store('app').username = data.username;
             Alpine.store('app').host = data.host;
+            Alpine.store('app').csrfToken = data.csrf_token;
             Alpine.store('app').currentView = 'databases';
             Alpine.store('app').fetchDatabases();
         }
@@ -380,6 +382,10 @@ document.addEventListener('alpine:init', () => {
                     <button @click="$store.app.navigate('users')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"/></svg>
                         Users
+                    </button>
+                    <button @click="$store.app.navigate('schema-compare')" class="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+                        Schema Compare
                     </button>
                 </div>
 
@@ -1240,8 +1246,8 @@ function dataViewer() {
             try {
                 await Alpine.store('app').api('PUT',
                     'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/0',
-                    { row: { [field]: this.editValue || null }, where });
-                row[field] = this.editValue || null;
+                    { row: { [field]: this.editValue }, where });
+                row[field] = this.editValue;
                 Alpine.store('toast').success('Row updated');
             } catch (e) { Alpine.store('toast').error(e.message); }
         },

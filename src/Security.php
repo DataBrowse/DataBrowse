@@ -86,11 +86,12 @@ final class Security {
         return $identifier;
     }
 
-    // Get client IP (X-Forwarded-For aware)
+    // Get client IP — uses REMOTE_ADDR by default (safe).
+    // X-Forwarded-For is only used when REMOTE_ADDR is a private/loopback IP (behind reverse proxy).
     public static function getClientIP(): string {
+        $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
         $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? null;
-        if ($forwarded) {
-            // Take the first IP from comma-separated list
+        if ($forwarded && self::isPrivateIP($remoteAddr)) {
             $ips = array_map('trim', explode(',', $forwarded));
             return $ips[0];
         }
@@ -110,5 +111,9 @@ final class Security {
         }
         $maskLong = ~((1 << (32 - $mask)) - 1);
         return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
+    }
+
+    private static function isPrivateIP(string $ip): bool {
+        return !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
     }
 }

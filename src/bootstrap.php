@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 // === Version & Constants ===
 define('DATABROWSE_VERSION', '1.0.0');
-define('DATABROWSE_MIN_PHP', '8.4.0');
+define('DATABROWSE_MIN_PHP', '8.2.0');
 
 // PHP version check
 if (version_compare(PHP_VERSION, DATABROWSE_MIN_PHP, '<')) {
@@ -46,23 +46,25 @@ set_exception_handler(function (\Throwable $e): void {
     exit(1);
 });
 
-// Session configuration
-ini_set('session.cookie_httponly', '1');
-ini_set('session.cookie_samesite', 'Strict');
-ini_set('session.use_strict_mode', '1');
-if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
-    ini_set('session.cookie_secure', '1');
-}
-session_name('databrowse_sid');
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+// Session configuration (skip in CLI mode for testing)
+if (PHP_SAPI !== 'cli') {
+    ini_set('session.cookie_httponly', '1');
+    ini_set('session.cookie_samesite', 'Strict');
+    ini_set('session.use_strict_mode', '1');
+    if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
+        ini_set('session.cookie_secure', '1');
+    }
+    session_name('databrowse_sid');
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
 }
 
 // Config loader
 function loadConfig(): array {
     $configFile = __DIR__ . '/databrowse.config.json';
     // Single file mode: config in same directory as script
-    if (!file_exists($configFile)) {
+    if (!file_exists($configFile) && isset($_SERVER['SCRIPT_FILENAME'])) {
         $configFile = dirname($_SERVER['SCRIPT_FILENAME']) . '/databrowse.config.json';
     }
     if (!file_exists($configFile)) {
@@ -109,13 +111,15 @@ function getDefaultConfig(): array {
     ];
 }
 
-$config = loadConfig();
+if (!defined('DATABROWSE_TESTING')) {
+    $config = loadConfig();
 
-// HTTPS force
-if ($config['security']['force_https'] && empty($_SERVER['HTTPS'])) {
-    header('Location: https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], true, 301);
-    exit;
+    // HTTPS force
+    if ($config['security']['force_https'] && !empty($_SERVER['HTTP_HOST']) && empty($_SERVER['HTTPS'])) {
+        header('Location: https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], true, 301);
+        exit;
+    }
+
+    // CSP nonce generation
+    $cspNonce = base64_encode(random_bytes(16));
 }
-
-// CSP nonce generation
-$cspNonce = base64_encode(random_bytes(16));

@@ -2,8 +2,8 @@
 // === Main Dispatch Point ===
 
 $router = new Router();
-$config = loadConfig();
-$nonce = $cspNonce;
+if (!isset($config)) $config = loadConfig();
+$nonce = $cspNonce ?? '';
 
 // Security headers
 if ($config['security']['csp_enabled']) {
@@ -78,23 +78,25 @@ $router->post('/api/auth/logout', function (): array {
 });
 
 $router->get('/api/auth/status', function (): array {
+    $authenticated = !empty($_SESSION['authenticated']);
     return [
-        'authenticated' => !empty($_SESSION['authenticated']),
+        'authenticated' => $authenticated,
         'username' => $_SESSION['username'] ?? null,
         'host' => $_SESSION['host'] ?? null,
+        'csrf_token' => $authenticated ? ($_SESSION['csrf_token'] ?? null) : null,
     ];
 });
 
 // === Middleware: Auth + CSRF check ===
 $authMiddleware = function () use ($config): ?array {
-    // Session timeout
-    if (isset($_SESSION['login_time'])) {
-        if (time() - $_SESSION['login_time'] > $config['security']['session_timeout']) {
-            session_destroy();
-            http_response_code(401);
-            return ['error' => 'Session expired'];
-        }
+    // Session timeout (based on last activity, not login time)
+    $lastActivity = $_SESSION['last_activity'] ?? $_SESSION['login_time'] ?? 0;
+    if ($lastActivity > 0 && (time() - $lastActivity > $config['security']['session_timeout'])) {
+        session_destroy();
+        http_response_code(401);
+        return ['error' => 'Session expired'];
     }
+    $_SESSION['last_activity'] = time();
 
     if (empty($_SESSION['authenticated'])) {
         http_response_code(401);
@@ -182,24 +184,34 @@ $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware)
     $engine = Security::sanitizeIdentifier($input['engine'] ?? 'InnoDB');
     $charset = Security::sanitizeIdentifier($input['charset'] ?? 'utf8mb4');
 
+    // Allowed MySQL column types (whitelist)
+    $allowedTypes = ['INT','TINYINT','SMALLINT','MEDIUMINT','BIGINT','FLOAT','DOUBLE','DECIMAL',
+        'VARCHAR','CHAR','TEXT','TINYTEXT','MEDIUMTEXT','LONGTEXT','BLOB','TINYBLOB','MEDIUMBLOB','LONGBLOB',
+        'DATE','DATETIME','TIMESTAMP','TIME','YEAR','BOOLEAN','BOOL','JSON','ENUM','SET','BINARY','VARBINARY'];
+
+    $conn = getConnection();
+    $conn->select_db($db);
+
     $columns = [];
     foreach ($input['columns'] as $col) {
-        $def = '`' . Security::sanitizeIdentifier($col['name']) . '` ' . $col['type'];
+        $colType = strtoupper(trim($col['type']));
+        if (!in_array($colType, $allowedTypes)) {
+            http_response_code(400);
+            return ['error' => 'Invalid column type: ' . htmlspecialchars($col['type'])];
+        }
+        $def = '`' . Security::sanitizeIdentifier($col['name']) . '` ' . $colType;
         if (!empty($col['length'])) $def .= '(' . (int)$col['length'] . ')';
         if (!($col['nullable'] ?? true)) $def .= ' NOT NULL';
         if (isset($col['default'])) {
             $def .= " DEFAULT " . (is_numeric($col['default'])
-                ? $col['default']
-                : "'" . addslashes((string)$col['default']) . "'");
+                ? (float)$col['default']
+                : "'" . $conn->real_escape_string((string)$col['default']) . "'");
         }
         if (!empty($col['auto_increment'])) $def .= ' AUTO_INCREMENT';
         if (!empty($col['primary'])) $def .= ' PRIMARY KEY';
-        if (!empty($col['comment'])) $def .= " COMMENT '" . addslashes($col['comment']) . "'";
+        if (!empty($col['comment'])) $def .= " COMMENT '" . $conn->real_escape_string($col['comment']) . "'";
         $columns[] = $def;
     }
-
-    $conn = getConnection();
-    $conn->select_db($db);
     $sql = "CREATE TABLE `{$tableName}` (\n  " . implode(",\n  ", $columns) . "\n) ENGINE={$engine} DEFAULT CHARSET={$charset}";
     $conn->query($sql);
     return ['success' => true, 'table' => $tableName, 'sql' => $sql];
@@ -476,7 +488,8 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
     ];
 });
 
-$router->get('/api/import/progress/{id}', function (array $params): array {
+$router->get('/api/import/progress/{id}', function (array $params) use ($authMiddleware): array {
+    if ($err = ($authMiddleware)()) return $err;
     $id = $params['id'];
     return $_SESSION['import_progress'][$id] ?? ['error' => 'Progress not found'];
 });

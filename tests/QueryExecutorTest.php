@@ -4,17 +4,23 @@ declare(strict_types=1);
 use PHPUnit\Framework\TestCase;
 
 final class QueryExecutorTest extends TestCase {
+    private function createExecutorForSplitTest(): QueryExecutor {
+        // Use Reflection to instantiate without a real mysqli connection
+        // splitQueries() doesn't use $this->conn so this is safe
+        $ref = new ReflectionClass(QueryExecutor::class);
+        $instance = $ref->newInstanceWithoutConstructor();
+        return $instance;
+    }
+
     public function testSplitSingleQuery(): void {
-        $conn = $this->createMock(mysqli::class);
-        $executor = new QueryExecutor($conn);
+        $executor = $this->createExecutorForSplitTest();
         $queries = $executor->splitQueries('SELECT * FROM users');
         $this->assertCount(1, $queries);
         $this->assertSame('SELECT * FROM users', $queries[0]);
     }
 
     public function testSplitMultipleQueries(): void {
-        $conn = $this->createMock(mysqli::class);
-        $executor = new QueryExecutor($conn);
+        $executor = $this->createExecutorForSplitTest();
         $queries = $executor->splitQueries('SELECT 1; SELECT 2; SELECT 3');
         $this->assertCount(3, $queries);
         $this->assertSame('SELECT 1', $queries[0]);
@@ -23,8 +29,7 @@ final class QueryExecutorTest extends TestCase {
     }
 
     public function testSplitPreservesStringLiterals(): void {
-        $conn = $this->createMock(mysqli::class);
-        $executor = new QueryExecutor($conn);
+        $executor = $this->createExecutorForSplitTest();
         $queries = $executor->splitQueries("SELECT 'hello; world' FROM test; SELECT 2");
         $this->assertCount(2, $queries);
         $this->assertSame("SELECT 'hello; world' FROM test", $queries[0]);
@@ -32,15 +37,13 @@ final class QueryExecutorTest extends TestCase {
     }
 
     public function testSplitHandlesEscapedQuotes(): void {
-        $conn = $this->createMock(mysqli::class);
-        $executor = new QueryExecutor($conn);
+        $executor = $this->createExecutorForSplitTest();
         $queries = $executor->splitQueries("SELECT 'it\\'s a test'; SELECT 2");
         $this->assertCount(2, $queries);
     }
 
     public function testSplitEmptyInput(): void {
-        $conn = $this->createMock(mysqli::class);
-        $executor = new QueryExecutor($conn);
+        $executor = $this->createExecutorForSplitTest();
         $queries = $executor->splitQueries('');
         $this->assertCount(0, $queries);
     }
