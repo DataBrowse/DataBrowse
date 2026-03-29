@@ -25,29 +25,10 @@
     <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3/dist/cdn.min.js" nonce="{{CSP_NONCE}}"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" nonce="{{CSP_NONCE}}"></script>
 
-    <!-- CodeMirror 6 via CDN -->
-    <script nonce="{{CSP_NONCE}}">
-    // CodeMirror will be lazy-loaded when SQL editor is first opened
-    let cmLoaded = false;
-    let cmEditor = null;
-    async function loadCodeMirror(target) {
-        if (cmLoaded) return;
-        const script = document.createElement('script');
-        script.src = 'https://cdn.jsdelivr.net/combine/npm/@codemirror/state@6,npm/@codemirror/view@6,npm/@codemirror/lang-sql@6,npm/@codemirror/language@6,npm/@codemirror/commands@6,npm/@codemirror/autocomplete@6,npm/@codemirror/search@6';
-        script.nonce = '{{CSP_NONCE}}';
-        document.head.appendChild(script);
-        cmLoaded = true;
-    }
-    </script>
-
     <style nonce="{{CSP_NONCE}}">
     [x-cloak] { display: none !important; }
-    .cm-editor { height: 200px; font-size: 14px; border: 1px solid #e5e7eb; border-radius: 0.375rem; }
-    .dark .cm-editor { border-color: #374151; background: #1f2937; }
     .toast-enter { animation: slideIn 0.3s ease-out; }
-    .toast-leave { animation: slideOut 0.3s ease-in; }
     @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-    @keyframes slideOut { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0; } }
     .skeleton { background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
     .dark .skeleton { background: linear-gradient(90deg, #374151 25%, #4b5563 50%, #374151 75%); background-size: 200% 100%; }
     @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
