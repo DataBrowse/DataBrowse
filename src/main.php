@@ -677,21 +677,35 @@ $router->post('/api/schema/compare', function () use ($authMiddleware): array {
 $uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-// Remove script path prefix for subdirectory installations
-$scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
-$basePath = dirname($scriptName);
-if ($basePath !== '/' && $basePath !== '\\') {
-    if (str_starts_with($uri, $basePath)) {
+// Determine the base path by finding where the script sits
+// Works with: Apache/Nginx rewrite, subdirectory installs, PHP built-in server
+$scriptName = $_SERVER['SCRIPT_FILENAME'] ?? $_SERVER['SCRIPT_NAME'] ?? '';
+$scriptBasename = basename($scriptName);
+
+// If URI contains the script filename (e.g., /subdir/databrowse.php/api/...), strip it
+if ($scriptBasename && str_contains($scriptBasename, '.php')) {
+    $pos = strpos($uri, $scriptBasename);
+    if ($pos !== false) {
+        $uri = substr($uri, $pos + strlen($scriptBasename));
+    }
+}
+
+// For subdirectory installs without script name in URL (rewrite rules)
+// Strip the directory prefix if SCRIPT_NAME tells us the base
+$sn = $_SERVER['SCRIPT_NAME'] ?? '';
+if (str_contains($sn, '.php')) {
+    $basePath = dirname($sn);
+    if ($basePath !== '/' && $basePath !== '\\' && str_starts_with($uri, $basePath)) {
         $uri = substr($uri, strlen($basePath));
     }
 }
-// Also strip the script filename itself (e.g., /databrowse.php)
-$scriptBasename = basename($scriptName);
-if (str_starts_with($uri, '/' . $scriptBasename)) {
-    $uri = substr($uri, strlen('/' . $scriptBasename));
-}
+
 if ($uri === '' || $uri === false) {
     $uri = '/';
+}
+// Ensure URI starts with /
+if ($uri[0] !== '/') {
+    $uri = '/' . $uri;
 }
 
 // API routes
