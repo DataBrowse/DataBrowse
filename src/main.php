@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 // === Main Dispatch Point ===
 
 $router = new Router();
@@ -13,14 +14,20 @@ if ($config['security']['csp_enabled']) {
 // IP whitelist check
 if (!Security::checkIPWhitelist($config['security']['ip_whitelist'])) {
     http_response_code(403);
-    header('Content-Type: application/json');
-    echo json_encode(['error' => 'Access denied']);
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    if (str_contains($uri, '/api/')) {
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Access denied']);
+    } else {
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!DOCTYPE html><html><head><title>Access Denied</title></head><body><h1>403 Forbidden</h1><p>Your IP address is not allowed.</p></body></html>';
+    }
     exit;
 }
 
 // === Auth Routes (CSRF exempt) ===
 $router->post('/api/auth/login', function (array $params) use ($config): array {
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
 
     // Rate limit check
     $ip = Security::getClientIP();
@@ -131,6 +138,21 @@ $authMiddleware = function () use ($config): ?array {
     return null; // Auth passed
 };
 
+// Helper: parse JSON request body with validation
+function getJsonInput(): array {
+    $raw = file_get_contents('php://input');
+    if ($raw === '' || $raw === false) {
+        http_response_code(400);
+        return [];
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        http_response_code(400);
+        return [];
+    }
+    return $data;
+}
+
 // Helper: get authenticated connection
 function getConnection(): mysqli {
     return ConnectionManager::connect(
@@ -151,7 +173,7 @@ $router->get('/api/databases', function () use ($authMiddleware): array {
 
 $router->post('/api/databases', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $name = Security::sanitizeIdentifier($input['name'] ?? '');
     $charset = Security::sanitizeIdentifier($input['charset'] ?? 'utf8mb4');
     $collation = Security::sanitizeIdentifier($input['collation'] ?? 'utf8mb4_unicode_ci');
@@ -194,7 +216,7 @@ $router->get('/api/tables/{db}/{table}/structure', function (array $params) use 
 $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $tableName = Security::sanitizeIdentifier($input['name']);
     $engine = Security::sanitizeIdentifier($input['engine'] ?? 'InnoDB');
     $charset = Security::sanitizeIdentifier($input['charset'] ?? 'utf8mb4');
@@ -274,7 +296,7 @@ $router->post('/api/data/{db}/{table}', function (array $params) use ($authMiddl
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
 
     $conn = getConnection();
     $dm = new DataManager($conn);
@@ -286,7 +308,7 @@ $router->put('/api/data/{db}/{table}/{pk}', function (array $params) use ($authM
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
 
     $conn = getConnection();
     $dm = new DataManager($conn);
@@ -298,7 +320,7 @@ $router->delete('/api/data/{db}/{table}/{pk}', function (array $params) use ($au
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
 
     $conn = getConnection();
     $dm = new DataManager($conn);
@@ -310,7 +332,7 @@ $router->post('/api/data/{db}/{table}/batch-delete', function (array $params) us
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
 
     $conn = getConnection();
     $dm = new DataManager($conn);
@@ -321,7 +343,7 @@ $router->post('/api/data/{db}/{table}/batch-delete', function (array $params) us
 // === Query Routes ===
 $router->post('/api/query/execute', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $sql = $input['sql'] ?? '';
     $database = $input['database'] ?? null;
 
@@ -352,7 +374,7 @@ $router->post('/api/query/execute', function () use ($authMiddleware): array {
 
 $router->post('/api/query/explain', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $database = $input['database'] ?? null;
 
     $conn = getConnection();
@@ -372,7 +394,7 @@ $router->get('/api/query/history', function () use ($authMiddleware): array {
 // === Export Routes ===
 $router->post('/api/export/sql', function () use ($authMiddleware): void {
     if ($err = ($authMiddleware)()) { echo json_encode($err); return; }
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
 
     $conn = getConnection();
@@ -395,7 +417,7 @@ $router->post('/api/export/sql', function () use ($authMiddleware): void {
 
 $router->post('/api/export/csv', function () use ($authMiddleware): void {
     if ($err = ($authMiddleware)()) { echo json_encode($err); return; }
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
     $table = Security::sanitizeIdentifier($input['table']);
 
@@ -413,7 +435,7 @@ $router->post('/api/export/csv', function () use ($authMiddleware): void {
 
 $router->post('/api/export/json', function () use ($authMiddleware): void {
     if ($err = ($authMiddleware)()) { echo json_encode($err); return; }
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
     $table = Security::sanitizeIdentifier($input['table']);
 
@@ -558,7 +580,7 @@ $router->get('/api/users/{user}/{host}/privileges', function (array $params) use
 
 $router->post('/api/users', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $conn = getConnection();
     $userMgr = new UserManager($conn);
     $userMgr->createUser($input['user'], $input['host'] ?? '%', $input['password']);
@@ -600,7 +622,7 @@ $router->get('/api/routines/{db}', function (array $params) use ($authMiddleware
 // === Schema Compare Routes ===
 $router->post('/api/schema/compare', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
-    $input = json_decode(file_get_contents('php://input'), true);
+    $input = getJsonInput();
     $source = Security::sanitizeIdentifier($input['source']);
     $target = Security::sanitizeIdentifier($input['target']);
     $conn = getConnection();

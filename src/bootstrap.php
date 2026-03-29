@@ -24,7 +24,8 @@ set_error_handler(function (int $errno, string $errstr, string $file, int $line)
 });
 
 set_exception_handler(function (\Throwable $e): void {
-    $isApi = str_starts_with($_SERVER['REQUEST_URI'] ?? '', '/api/');
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    $isApi = str_contains($uri, '/api/');
     if ($isApi) {
         http_response_code(500);
         header('Content-Type: application/json');

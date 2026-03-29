@@ -69,6 +69,7 @@ if (!file_exists($mainPath)) {
 }
 $mainContent = file_get_contents($mainPath);
 $mainContent = preg_replace('/^<\?php\s*/', '', $mainContent);
+$mainContent = preg_replace('/declare\s*\(\s*strict_types\s*[:=]\s*1\s*\)\s*;\s*\n?/', '', $mainContent);
 $output .= "// === Main Dispatch ===\n";
 $output .= trim($mainContent) . "\n";
 
