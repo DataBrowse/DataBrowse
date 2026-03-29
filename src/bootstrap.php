@@ -83,13 +83,13 @@ set_exception_handler(function (\Throwable $e): void {
     ));
 
     $uri = $_SERVER['REQUEST_URI'] ?? '';
-    $isApi = str_contains($uri, '/api/');
+    $route = $_GET['_route'] ?? '';
+    $isApi = str_contains($uri, '/api/') || str_contains($route, '/api/');
     if ($isApi) {
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode([
-            'error' => true,
-            'message' => 'Internal server error',
+            'error' => 'Internal server error',
             'request_id' => $requestId,
             'detail' => defined('DATABROWSE_DEBUG') && DATABROWSE_DEBUG
                 ? $e->getMessage() : null,

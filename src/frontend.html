@@ -131,8 +131,11 @@ document.addEventListener('alpine:init', () => {
                 throw new Error('Session expired');
             }
             const data = await res.json();
-            if (!res.ok && data.error) {
-                throw new Error(typeof data.error === 'string' ? data.error : 'Request failed');
+            if (!res.ok) {
+                // Handle both {error: "message"} and {error: true, message: "message"} formats
+                const msg = typeof data.error === 'string' ? data.error
+                    : (data.message || 'Request failed');
+                throw new Error(msg);
             }
             return data;
         },

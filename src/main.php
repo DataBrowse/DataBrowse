@@ -21,7 +21,8 @@ $trustedProxies = is_array($config['security']['trusted_proxies'] ?? null)
 if (!Security::checkIPWhitelist($ipWhitelist, $trustedProxies)) {
     http_response_code(403);
     $uri = $_SERVER['REQUEST_URI'] ?? '';
-    if (str_contains($uri, '/api/')) {
+    $route = $_GET['_route'] ?? '';
+    if (str_contains($uri, '/api/') || str_contains($route, '/api/')) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
@@ -829,8 +830,13 @@ function getConnection(): mysqli {
 // === Database Routes ===
 $router->get('/api/databases', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
-    $inspector = new SchemaInspector(getConnection());
-    return ['databases' => $inspector->getDatabases()];
+    try {
+        $inspector = new SchemaInspector(getConnection());
+        return ['databases' => $inspector->getDatabases()];
+    } catch (\mysqli_sql_exception $e) {
+        http_response_code(500);
+        return ['error' => 'Failed to list databases: ' . $e->getMessage()];
+    }
 });
 
 $router->post('/api/databases', function () use ($authMiddleware): array {
@@ -867,14 +873,19 @@ $router->get('/api/tables/{db}/{table}/structure', function (array $params) use 
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
-    $inspector = new SchemaInspector(getConnection());
-    return [
-        'columns' => $inspector->getColumns($db, $table),
-        'indexes' => $inspector->getIndexes($db, $table),
-        'foreign_keys' => $inspector->getForeignKeys($db, $table),
-        'create_statement' => $inspector->getCreateStatement($db, $table),
-        'status' => $inspector->getTableStatus($db, $table),
-    ];
+    try {
+        $inspector = new SchemaInspector(getConnection());
+        return [
+            'columns' => $inspector->getColumns($db, $table),
+            'indexes' => $inspector->getIndexes($db, $table),
+            'foreign_keys' => $inspector->getForeignKeys($db, $table),
+            'create_statement' => $inspector->getCreateStatement($db, $table),
+            'status' => $inspector->getTableStatus($db, $table),
+        ];
+    } catch (\mysqli_sql_exception $e) {
+        http_response_code(500);
+        return ['error' => 'Failed to load structure: ' . $e->getMessage()];
+    }
 });
 
 $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware): array {
@@ -983,9 +994,14 @@ $router->get('/api/data/{db}/{table}', function (array $params) use ($authMiddle
         $search = mb_substr($search, 0, 200, 'UTF-8');
     }
 
-    $conn = getConnection();
-    $dm = new DataManager($conn);
-    return $dm->getData($db, $table, $page, $limit, $sort, $order, $search);
+    try {
+        $conn = getConnection();
+        $dm = new DataManager($conn);
+        return $dm->getData($db, $table, $page, $limit, $sort, $order, $search);
+    } catch (\mysqli_sql_exception $e) {
+        http_response_code(500);
+        return ['error' => 'Database error: ' . $e->getMessage()];
+    }
 });
 
 $router->post('/api/data/{db}/{table}', function (array $params) use ($authMiddleware): array {

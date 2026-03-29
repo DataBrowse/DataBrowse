@@ -34,26 +34,19 @@ final class DataManager {
             $whereTypes .= 's';
         }
 
-        // Global search — only search text-compatible columns to avoid
-        // full table scans on BLOB/binary columns and improve performance
+        // Global search — skip BLOB/binary columns to avoid full table scans
         if ($search !== null && $search !== '') {
+            $skipTypes = ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary', 'geometry', 'point', 'linestring', 'polygon'];
             $inspector = new SchemaInspector($this->conn);
             $columns = $inspector->getColumns($database, $table);
-            $searchableTypes = [
-                'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext',
-                'enum', 'set', 'json',
-                'int', 'tinyint', 'smallint', 'mediumint', 'bigint',
-                'decimal', 'numeric', 'float', 'double',
-                'date', 'datetime', 'timestamp', 'time', 'year',
-            ];
             $searchClauses = [];
             foreach ($columns as $col) {
                 $dataType = strtolower($col['data_type'] ?? '');
-                if (!in_array($dataType, $searchableTypes, true)) {
+                if (in_array($dataType, $skipTypes, true)) {
                     continue;
                 }
                 $escapedCol = str_replace('`', '``', $col['name']);
-                $searchClauses[] = "CAST(`{$escapedCol}` AS CHAR) LIKE ?";
+                $searchClauses[] = "`{$escapedCol}` LIKE ?";
                 $whereValues[] = '%' . $search . '%';
                 $whereTypes .= 's';
             }
