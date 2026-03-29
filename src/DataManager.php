@@ -97,12 +97,13 @@ final class DataManager {
                 'page' => $page,
                 'limit' => $limit,
                 'total' => $total,
-                'pages' => (int)ceil($total / $limit),
+                'pages' => $limit > 0 ? (int)ceil($total / $limit) : 0,
             ],
         ];
     }
 
     public function insertRow(string $database, string $table, array $row): int {
+        if (empty($row)) throw new \InvalidArgumentException('Row data cannot be empty');
         $this->conn->select_db($database);
         $escapedTable = str_replace('`', '``', $table);
 
@@ -125,6 +126,8 @@ final class DataManager {
     }
 
     public function updateRow(string $database, string $table, array $row, array $where): int {
+        if (empty($row)) throw new \InvalidArgumentException('Row data cannot be empty');
+        if (empty($where)) throw new \InvalidArgumentException('WHERE clause cannot be empty');
         $this->conn->select_db($database);
         $escapedTable = str_replace('`', '``', $table);
 
@@ -151,6 +154,7 @@ final class DataManager {
     }
 
     public function deleteRow(string $database, string $table, array $where): int {
+        if (empty($where)) throw new \InvalidArgumentException('WHERE clause cannot be empty');
         $this->conn->select_db($database);
         $escapedTable = str_replace('`', '``', $table);
 

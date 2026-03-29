@@ -249,7 +249,7 @@ $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware)
     $columns = [];
     foreach ($input['columns'] as $col) {
         $colType = strtoupper(trim($col['type']));
-        if (!in_array($colType, $allowedTypes)) {
+        if (!in_array($colType, $allowedTypes, true)) {
             http_response_code(400);
             return ['error' => 'Invalid column type: ' . htmlspecialchars($col['type'])];
         }
