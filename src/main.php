@@ -5,6 +5,9 @@ declare(strict_types=1);
 $router = new Router();
 if (!isset($config)) $config = loadConfig();
 $nonce = $cspNonce ?? '';
+$ipWhitelist = is_array($config['security']['ip_whitelist'] ?? null)
+    ? $config['security']['ip_whitelist']
+    : [];
 
 // Security headers
 if ($config['security']['csp_enabled']) {
@@ -12,7 +15,10 @@ if ($config['security']['csp_enabled']) {
 }
 
 // IP whitelist check
-if (!Security::checkIPWhitelist($config['security']['ip_whitelist'])) {
+$trustedProxies = is_array($config['security']['trusted_proxies'] ?? null)
+    ? $config['security']['trusted_proxies']
+    : [];
+if (!Security::checkIPWhitelist($ipWhitelist, $trustedProxies)) {
     http_response_code(403);
     $uri = $_SERVER['REQUEST_URI'] ?? '';
     if (str_contains($uri, '/api/')) {
@@ -28,9 +34,20 @@ if (!Security::checkIPWhitelist($config['security']['ip_whitelist'])) {
 // === Auth Routes (CSRF exempt) ===
 $router->post('/api/auth/login', function (array $params) use ($config): array {
     $input = getJsonInput();
+    $trustedProxies = is_array($config['security']['trusted_proxies'] ?? null)
+        ? $config['security']['trusted_proxies']
+        : [];
+    $allowedHosts = is_array($config['security']['allowed_db_hosts'] ?? null)
+        ? $config['security']['allowed_db_hosts']
+        : ['127.0.0.1', 'localhost'];
+    if ($allowedHosts === []) {
+        $allowedHosts = ['127.0.0.1', 'localhost'];
+    }
+    $host = (string)($input['host'] ?? '127.0.0.1');
+    $port = (int)($input['port'] ?? 3306);
 
     // Rate limit check
-    $ip = Security::getClientIP();
+    $ip = Security::getClientIP($trustedProxies);
     if (!Security::checkRateLimit(
         "login:{$ip}",
         $config['security']['max_login_attempts'],
@@ -46,21 +63,32 @@ $router->post('/api/auth/login', function (array $params) use ($config): array {
         return ['error' => 'Root login is disabled.'];
     }
 
+    // Prevent arbitrary outbound DB probing
+    if (!in_array($host, $allowedHosts, true)) {
+        http_response_code(403);
+        return ['error' => 'Target host is not allowed'];
+    }
+
+    if ($port < 1 || $port > 65535) {
+        http_response_code(400);
+        return ['error' => 'Invalid port'];
+    }
+
     try {
         $conn = ConnectionManager::connect(
-            host: $input['host'] ?? '127.0.0.1',
+            host: $host,
             username: $input['username'] ?? '',
             password: $input['password'] ?? '',
-            port: (int)($input['port'] ?? 3306),
+            port: $port,
             socket: $input['socket'] ?? null,
         );
 
         // Save session (password encrypted at rest)
         session_regenerate_id(true);
         $_SESSION['authenticated'] = true;
-        $_SESSION['host'] = $input['host'] ?? '127.0.0.1';
+        $_SESSION['host'] = $host;
         $_SESSION['username'] = $input['username'] ?? '';
-        $_SESSION['port'] = (int)($input['port'] ?? 3306);
+        $_SESSION['port'] = $port;
         $_SESSION['socket'] = $input['socket'] ?? null;
         // Encrypt password so it's not plaintext in session files
         $sessKey = random_bytes(32);
@@ -132,7 +160,7 @@ $authMiddleware = function () use ($config): ?array {
         $writeExempt = ['/api/auth/', '/api/export/'];
         $isExempt = false;
         foreach ($writeExempt as $prefix) {
-            if (str_contains($checkUri, $prefix)) { $isExempt = true; break; }
+            if (str_starts_with($checkUri, $prefix)) { $isExempt = true; break; }
         }
         if (!$isExempt) {
             http_response_code(403);
@@ -172,6 +200,65 @@ function requireFields(array $input, array $fields): ?array {
         http_response_code(400);
         return ['error' => 'Missing required fields: ' . implode(', ', $missing)];
     }
+    return null;
+}
+
+function getUploadErrorMessage(int $errorCode): string {
+    return match ($errorCode) {
+        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Uploaded file exceeds size limits',
+        UPLOAD_ERR_PARTIAL => 'Uploaded file was only partially received',
+        UPLOAD_ERR_NO_FILE => 'No file uploaded',
+        UPLOAD_ERR_NO_TMP_DIR => 'Temporary upload directory is missing',
+        UPLOAD_ERR_CANT_WRITE => 'Failed to write uploaded file',
+        UPLOAD_ERR_EXTENSION => 'Upload blocked by a PHP extension',
+        default => 'Unknown upload error',
+    };
+}
+
+function validateUploadedFile(
+    array $file,
+    int $maxSize,
+    array $allowedExtensions,
+    array $allowedMimes
+): ?array {
+    $uploadError = (int)($file['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($uploadError !== UPLOAD_ERR_OK) {
+        http_response_code(400);
+        return ['error' => getUploadErrorMessage($uploadError)];
+    }
+
+    $tmpName = (string)($file['tmp_name'] ?? '');
+    if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+        http_response_code(400);
+        return ['error' => 'Invalid upload source'];
+    }
+
+    $size = (int)($file['size'] ?? 0);
+    if ($size < 0 || $size > $maxSize) {
+        http_response_code(413);
+        return ['error' => 'File too large. Max: ' . Helpers::formatSize($maxSize)];
+    }
+
+    $name = (string)($file['name'] ?? '');
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if ($ext === '' || !in_array($ext, $allowedExtensions, true)) {
+        http_response_code(400);
+        return ['error' => 'Invalid file type'];
+    }
+
+    $mime = '';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($tmpName) ?: '';
+    } elseif (function_exists('mime_content_type')) {
+        $mime = mime_content_type($tmpName) ?: '';
+    }
+
+    if ($mime !== '' && !in_array($mime, $allowedMimes, true)) {
+        http_response_code(400);
+        return ['error' => 'Invalid file MIME type'];
+    }
+
     return null;
 }
 
@@ -268,7 +355,7 @@ $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware)
         $colType = strtoupper(trim($col['type']));
         if (!in_array($colType, $allowedTypes, true)) {
             http_response_code(400);
-            return ['error' => 'Invalid column type: ' . htmlspecialchars($col['type'])];
+            return ['error' => 'Invalid column type: ' . htmlspecialchars((string)$col['type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')];
         }
         $def = '`' . Security::sanitizeIdentifier($col['name']) . '` ' . $colType;
         if (!empty($col['length'])) $def .= '(' . (int)$col['length'] . ')';
@@ -383,11 +470,14 @@ $router->post('/api/data/{db}/{table}/batch-delete', function (array $params) us
 });
 
 // === Query Routes ===
-$router->post('/api/query/execute', function () use ($authMiddleware): array {
+$router->post('/api/query/execute', function () use ($authMiddleware, $config): array {
     if ($err = ($authMiddleware)()) return $err;
     $input = getJsonInput();
     $sql = $input['sql'] ?? '';
     $database = $input['database'] ?? null;
+    $maxQueryLimit = max(1, (int)($config['security']['max_query_limit'] ?? 5000));
+    $requestedLimit = (int)($input['limit'] ?? 1000);
+    $limit = max(1, min($maxQueryLimit, $requestedLimit));
 
     $conn = getConnection();
     if ($database) {
@@ -395,7 +485,7 @@ $router->post('/api/query/execute', function () use ($authMiddleware): array {
     }
 
     $executor = new QueryExecutor($conn);
-    $result = $executor->execute($sql, (int)($input['limit'] ?? 1000));
+    $result = $executor->execute($sql, $limit);
 
     // Save to session history
     if (!isset($_SESSION['query_history'])) {
@@ -504,16 +594,19 @@ $router->post('/api/import/sql', function () use ($authMiddleware, $config): arr
 
     $file = $_FILES['file'];
     $maxSize = $config['import']['max_file_size'];
-
-    if ($file['size'] > $maxSize) {
-        http_response_code(413);
-        return ['error' => 'File too large. Max: ' . Helpers::formatSize($maxSize)];
-    }
-
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, $config['import']['allowed_extensions'], true)) {
+    $validationError = validateUploadedFile(
+        $file,
+        $maxSize,
+        ['sql'],
+        ['text/plain', 'application/sql', 'application/x-sql', 'text/x-sql', 'application/octet-stream']
+    );
+    if ($validationError !== null) {
+        return $validationError;
+    }
+    if ($ext !== 'sql' || !in_array($ext, $config['import']['allowed_extensions'], true)) {
         http_response_code(400);
-        return ['error' => 'Invalid file type. Allowed: ' . implode(', ', $config['import']['allowed_extensions'])];
+        return ['error' => 'Invalid file type. Allowed: sql'];
     }
 
     $database = Security::sanitizeIdentifier($_POST['database'] ?? '');
@@ -541,9 +634,19 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
     }
 
     $file = $_FILES['file'];
-    if ($file['size'] > $config['import']['max_file_size']) {
-        http_response_code(413);
-        return ['error' => 'File too large. Max: ' . Helpers::formatSize($config['import']['max_file_size'])];
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $validationError = validateUploadedFile(
+        $file,
+        $config['import']['max_file_size'],
+        ['csv'],
+        ['text/plain', 'text/csv', 'application/csv', 'application/vnd.ms-excel', 'application/octet-stream']
+    );
+    if ($validationError !== null) {
+        return $validationError;
+    }
+    if ($ext !== 'csv' || !in_array($ext, $config['import']['allowed_extensions'], true)) {
+        http_response_code(400);
+        return ['error' => 'Invalid file type. Allowed: csv'];
     }
 
     $database = Security::sanitizeIdentifier($_POST['database'] ?? '');

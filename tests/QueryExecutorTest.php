@@ -48,6 +48,13 @@ final class QueryExecutorTest extends TestCase {
         $this->assertCount(0, $queries);
     }
 
+    public function testExecuteEmptyInputReturnsValidationError(): void {
+        $executor = $this->createExecutorForSplitTest();
+        $result = $executor->execute('');
+        $this->assertFalse($result->success);
+        $this->assertSame('SQL query is empty', $result->error);
+    }
+
     public function testQueryResultToArray(): void {
         $result = new QueryResult(
             success: true,

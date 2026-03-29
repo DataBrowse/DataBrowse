@@ -49,7 +49,10 @@ Create `databrowse.config.json` in the same directory:
   "security": {
     "force_https": true,
     "allow_root_login": false,
-    "ip_whitelist": ["10.0.0.0/8"]
+    "ip_whitelist": ["10.0.0.0/8"],
+    "trusted_proxies": ["127.0.0.1"],
+    "allowed_db_hosts": ["127.0.0.1", "localhost"],
+    "max_query_limit": 5000
   },
   "ui": {
     "default_theme": "dark",

@@ -61,9 +61,23 @@ final class QueryExecutor {
 
     public function execute(string $sql, int $limit = 1000): QueryResult {
         $startTime = hrtime(true);
+        $limit = max(1, min(10000, $limit));
 
         // Multi-query detection
         $queries = $this->splitQueries($sql);
+        if ($queries === []) {
+            return new QueryResult(
+                success: false,
+                type: QueryType::OTHER,
+                rows: [],
+                fields: [],
+                rowCount: 0,
+                affectedRows: 0,
+                elapsed: 0.0,
+                sql: '',
+                error: 'SQL query is empty',
+            );
+        }
 
         if (count($queries) > 1) {
             return $this->executeMulti($queries, $limit);

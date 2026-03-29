@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 final class SecurityTest extends TestCase {
     protected function setUp(): void {
         $_SESSION = [];
+        $_SERVER = [];
     }
 
     public function testCSRFTokenGeneration(): void {
@@ -61,5 +62,20 @@ final class SecurityTest extends TestCase {
 
     public function testIPWhitelistEmpty(): void {
         $this->assertTrue(Security::checkIPWhitelist([]));
+    }
+
+    public function testGetClientIPIgnoresUntrustedProxyHeaders(): void {
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.10';
+        $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.9';
+        $_SERVER['HTTP_X_REAL_IP'] = '198.51.100.8';
+
+        $this->assertSame('203.0.113.10', Security::getClientIP(['10.0.0.0/8']));
+    }
+
+    public function testGetClientIPUsesForwardedForFromTrustedProxy(): void {
+        $_SERVER['REMOTE_ADDR'] = '10.10.10.10';
+        $_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.22, 10.10.10.10';
+
+        $this->assertSame('198.51.100.22', Security::getClientIP(['10.0.0.0/8']));
     }
 }

@@ -40,7 +40,7 @@ set_exception_handler(function (\Throwable $e): void {
         echo '<!DOCTYPE html><html><head><title>DataBrowse Error</title></head><body>';
         echo '<h1>DataBrowse Error</h1><p>An unexpected error occurred.</p>';
         if (defined('DATABROWSE_DEBUG') && DATABROWSE_DEBUG) {
-            echo '<pre>' . htmlspecialchars($e->getMessage()) . '</pre>';
+            echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</pre>';
         }
         echo '</body></html>';
     }
@@ -82,9 +82,12 @@ function getDefaultConfig(): array {
         'servers' => [],
         'security' => [
             'ip_whitelist' => [],
+            'trusted_proxies' => [],
+            'allowed_db_hosts' => ['127.0.0.1', 'localhost'],
             'max_login_attempts' => 5,
             'lockout_duration' => 900,
             'session_timeout' => 1800,
+            'max_query_limit' => 5000,
             'force_https' => false,
             'allow_root_login' => true,
             'read_only_mode' => false,
@@ -118,7 +121,12 @@ if (!defined('DATABROWSE_TESTING')) {
     // HTTPS force
     if ($config['security']['force_https'] && !empty($_SERVER['HTTP_HOST']) && empty($_SERVER['HTTPS'])) {
         $safeHost = preg_replace('/[^a-zA-Z0-9.\-:]/', '', $_SERVER['HTTP_HOST']);
-        header('Location: https://' . $safeHost . $_SERVER['REQUEST_URI'], true, 301);
+        $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
+        if (!is_string($requestUri) || $requestUri === '') {
+            $requestUri = '/';
+        }
+        $requestUri = str_replace(["\r", "\n"], '', $requestUri);
+        header('Location: https://' . $safeHost . $requestUri, true, 301);
         exit;
     }
 
