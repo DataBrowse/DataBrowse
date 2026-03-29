@@ -28,16 +28,18 @@ final class SecurityTest extends TestCase {
     }
 
     public function testRateLimitAllows(): void {
-        $this->assertTrue(Security::checkRateLimit('test_key', 5, 60));
-        $this->assertTrue(Security::checkRateLimit('test_key', 5, 60));
-        $this->assertTrue(Security::checkRateLimit('test_key', 5, 60));
+        $key = 'test_allow_' . bin2hex(random_bytes(4));
+        $this->assertTrue(Security::checkRateLimit($key, 5, 60));
+        $this->assertTrue(Security::checkRateLimit($key, 5, 60));
+        $this->assertTrue(Security::checkRateLimit($key, 5, 60));
     }
 
     public function testRateLimitBlocks(): void {
+        $key = 'test_block_' . bin2hex(random_bytes(4));
         for ($i = 0; $i < 5; $i++) {
-            Security::checkRateLimit('block_test', 5, 60);
+            Security::checkRateLimit($key, 5, 60);
         }
-        $this->assertFalse(Security::checkRateLimit('block_test', 5, 60));
+        $this->assertFalse(Security::checkRateLimit($key, 5, 60));
     }
 
     public function testSanitizeIdentifierValid(): void {

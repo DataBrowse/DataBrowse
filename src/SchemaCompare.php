@@ -6,10 +6,19 @@ final class SchemaCompare {
         private readonly mysqli $conn,
     ) {}
 
+    private const MAX_TABLES = 200;
+
     public function compare(string $sourceDb, string $targetDb): array {
         $inspector = new SchemaInspector($this->conn);
         $sourceTables = $inspector->getTables($sourceDb);
         $targetTables = $inspector->getTables($targetDb);
+
+        if (count($sourceTables) > self::MAX_TABLES || count($targetTables) > self::MAX_TABLES) {
+            throw new \RuntimeException(
+                'Schema compare is limited to ' . self::MAX_TABLES . ' tables per database. '
+                . "Source has " . count($sourceTables) . ", target has " . count($targetTables) . "."
+            );
+        }
 
         $sourceNames = array_column($sourceTables, 'name');
         $targetNames = array_column($targetTables, 'name');
@@ -39,16 +48,20 @@ final class SchemaCompare {
                 $changes = [];
                 $alters = [];
 
+                $escTable = str_replace('`', '``', $table);
+
                 // Columns only in source (to add)
                 foreach (array_diff_key($sourceColMap, $targetColMap) as $name => $col) {
+                    $escName = str_replace('`', '``', $name);
                     $changes[] = ['type' => 'add_column', 'column' => $name, 'definition' => $col];
-                    $alters[] = "ALTER TABLE `{$table}` ADD COLUMN `{$name}` {$col['column_type']};";
+                    $alters[] = "ALTER TABLE `{$escTable}` ADD COLUMN `{$escName}` {$col['column_type']};";
                 }
 
                 // Columns only in target (to drop)
                 foreach (array_diff_key($targetColMap, $sourceColMap) as $name => $col) {
+                    $escName = str_replace('`', '``', $name);
                     $changes[] = ['type' => 'drop_column', 'column' => $name];
-                    $alters[] = "ALTER TABLE `{$table}` DROP COLUMN `{$name}`;";
+                    $alters[] = "ALTER TABLE `{$escTable}` DROP COLUMN `{$escName}`;";
                 }
 
                 // Modified columns
@@ -57,6 +70,7 @@ final class SchemaCompare {
                     if ($sourceCol['column_type'] !== $targetCol['column_type'] ||
                         $sourceCol['nullable'] !== $targetCol['nullable'] ||
                         $sourceCol['default_value'] !== $targetCol['default_value']) {
+                        $escName = str_replace('`', '``', $name);
                         $changes[] = [
                             'type' => 'modify_column',
                             'column' => $name,
@@ -67,7 +81,7 @@ final class SchemaCompare {
                         $default = $sourceCol['default_value'] !== null
                             ? " DEFAULT '" . $this->conn->real_escape_string($sourceCol['default_value']) . "'"
                             : '';
-                        $alters[] = "ALTER TABLE `{$table}` MODIFY COLUMN `{$name}` {$sourceCol['column_type']}{$nullable}{$default};";
+                        $alters[] = "ALTER TABLE `{$escTable}` MODIFY COLUMN `{$escName}` {$sourceCol['column_type']}{$nullable}{$default};";
                     }
                 }
 

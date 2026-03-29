@@ -25,22 +25,30 @@ final class Security {
         return hash_equals($_SESSION['csrf_token'], $token);
     }
 
-    // Rate limiting (session-based, sliding window)
+    // Rate limiting — file-based, independent of session (cannot be bypassed by dropping cookies)
     public static function checkRateLimit(string $key, int $maxAttempts, int $window): bool {
-        $attempts = $_SESSION['rate_limits'][$key] ?? [];
+        $dir = sys_get_temp_dir() . '/databrowse_ratelimit';
+        if (!is_dir($dir)) { @mkdir($dir, 0700, true); }
+        $file = $dir . '/' . md5($key) . '.json';
+
+        $attempts = [];
+        if (file_exists($file)) {
+            $data = @file_get_contents($file);
+            if ($data !== false) {
+                $attempts = json_decode($data, true) ?: [];
+            }
+        }
 
         // Clean expired entries
-        $attempts = array_filter(
-            $attempts,
-            fn(int $time) => time() - $time < $window
-        );
+        $now = time();
+        $attempts = array_values(array_filter($attempts, fn(mixed $t) => is_int($t) && $now - $t < $window));
 
         if (count($attempts) >= $maxAttempts) {
             return false;
         }
 
-        $attempts[] = time();
-        $_SESSION['rate_limits'][$key] = array_values($attempts);
+        $attempts[] = $now;
+        @file_put_contents($file, json_encode($attempts), LOCK_EX);
         return true;
     }
 

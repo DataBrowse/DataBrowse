@@ -11,7 +11,7 @@ if (version_compare(PHP_VERSION, DATABROWSE_MIN_PHP, '<')) {
 }
 
 // Required extensions check
-$required = ['mysqli', 'json', 'mbstring', 'session'];
+$required = ['mysqli', 'json', 'mbstring', 'session', 'openssl'];
 $missing = array_filter($required, fn(string $ext) => !extension_loaded($ext));
 if (!empty($missing)) {
     die('Missing PHP extensions: ' . implode(', ', $missing));

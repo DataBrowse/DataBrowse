@@ -55,14 +55,19 @@ $router->post('/api/auth/login', function (array $params) use ($config): array {
             socket: $input['socket'] ?? null,
         );
 
-        // Save session
+        // Save session (password encrypted at rest)
         session_regenerate_id(true);
         $_SESSION['authenticated'] = true;
         $_SESSION['host'] = $input['host'] ?? '127.0.0.1';
         $_SESSION['username'] = $input['username'] ?? '';
-        $_SESSION['password'] = $input['password'] ?? '';
         $_SESSION['port'] = (int)($input['port'] ?? 3306);
         $_SESSION['socket'] = $input['socket'] ?? null;
+        // Encrypt password so it's not plaintext in session files
+        $sessKey = random_bytes(32);
+        $_SESSION['_enc_key'] = base64_encode($sessKey);
+        $iv = random_bytes(12);
+        $encrypted = openssl_encrypt($input['password'] ?? '', 'aes-256-gcm', $sessKey, 0, $iv, $tag);
+        $_SESSION['password'] = base64_encode($iv . $tag . $encrypted);
         $_SESSION['login_time'] = time();
         $_SESSION['csrf_token'] = Security::generateCSRFToken();
 
@@ -75,7 +80,7 @@ $router->post('/api/auth/login', function (array $params) use ($config): array {
         ];
     } catch (\mysqli_sql_exception $e) {
         http_response_code(401);
-        return ['error' => 'Authentication failed: ' . $e->getMessage()];
+        return ['error' => 'Authentication failed. Please check your credentials and try again.'];
     }
 });
 
@@ -170,12 +175,24 @@ function requireFields(array $input, array $fields): ?array {
     return null;
 }
 
+// Helper: decrypt session password
+function decryptSessionPassword(): string {
+    $key = base64_decode($_SESSION['_enc_key'] ?? '');
+    $blob = base64_decode($_SESSION['password'] ?? '');
+    if (strlen($blob) < 28 || strlen($key) < 32) return '';
+    $iv = substr($blob, 0, 12);
+    $tag = substr($blob, 12, 16);
+    $encrypted = substr($blob, 28);
+    $decrypted = openssl_decrypt($encrypted, 'aes-256-gcm', $key, 0, $iv, $tag);
+    return $decrypted !== false ? $decrypted : '';
+}
+
 // Helper: get authenticated connection
 function getConnection(): mysqli {
     return ConnectionManager::connect(
         host: $_SESSION['host'],
         username: $_SESSION['username'],
-        password: $_SESSION['password'],
+        password: decryptSessionPassword(),
         port: $_SESSION['port'],
         socket: $_SESSION['socket'] ?? null,
     );
