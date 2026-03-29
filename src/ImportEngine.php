@@ -284,6 +284,21 @@ final class SQLImporter {
             return null;
         }
         $data = json_decode($raw, true);
+
+        // Probabilistic cleanup of stale progress files (2% chance)
+        if (random_int(1, 50) === 1 && is_dir($dir)) {
+            $now = time();
+            $files = glob($dir . '/*.json');
+            if (is_array($files)) {
+                foreach ($files as $f) {
+                    $mtime = @filemtime($f);
+                    if ($mtime !== false && ($now - $mtime) > 3600) {
+                        @unlink($f);
+                    }
+                }
+            }
+        }
+
         return is_array($data) ? $data : null;
     }
 
@@ -340,11 +355,21 @@ final class CSVImporter {
                     $headers = range(0, count($row) - 1);
                 }
 
-                // Prepare statement once, reuse for all rows with same column count
-                if ($preparedStmt === null || count($row) !== $colCount) {
-                    $colCount = count($row);
+                $headerCount = count($headers);
+                $rowCount = count($row);
+
+                // Normalize row to match header count
+                if ($rowCount < $headerCount) {
+                    $row = array_pad($row, $headerCount, null);
+                } elseif ($rowCount > $headerCount) {
+                    $row = array_slice($row, 0, $headerCount);
+                }
+
+                // Prepare statement once, reuse for all rows
+                if ($preparedStmt === null) {
+                    $colCount = $headerCount;
                     $columns = array_map(
-                        fn($h) => '`' . str_replace('`', '``', $h) . '`',
+                        fn($h) => '`' . str_replace('`', '``', (string)$h) . '`',
                         $headers
                     );
                     $placeholders = array_fill(0, $colCount, '?');

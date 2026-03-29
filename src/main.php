@@ -126,7 +126,7 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
         }
         $_SESSION['password'] = base64_encode($iv . $tag . $encrypted);
         $_SESSION['login_time'] = time();
-        $_SESSION['csrf_token'] = Security::generateCSRFToken();
+        $csrfToken = Security::generateCSRFToken();
 
         $serverInfo = ConnectionManager::getServerInfo($conn);
         writeAuditLog('auth.login_success', [
@@ -138,7 +138,7 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
         return [
             'success' => true,
             'server' => $serverInfo,
-            'csrf_token' => $_SESSION['csrf_token'],
+            'csrf_token' => $csrfToken,
         ];
     } catch (\mysqli_sql_exception $e) {
         writeAuditLog('auth.login_failed', [
@@ -541,6 +541,22 @@ function getIdempotencyFilePath(string $scope, string $key): string {
     if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
         throw new \RuntimeException('Unable to initialize idempotency storage');
     }
+
+    // Probabilistic cleanup of stale idempotency files (1% chance per call)
+    if (random_int(1, 100) === 1) {
+        $ttl = max(30, (int)Config::get('security.idempotency_ttl', 900)) * 2;
+        $now = time();
+        $files = glob($dir . '/*.json');
+        if (is_array($files)) {
+            foreach ($files as $f) {
+                $mtime = @filemtime($f);
+                if ($mtime !== false && ($now - $mtime) > $ttl) {
+                    @unlink($f);
+                }
+            }
+        }
+    }
+
     return $dir . '/' . hash('sha256', $identity) . '.json';
 }
 
@@ -767,7 +783,12 @@ function getSessionEncryptionKey(): string {
     // Derive key from server-level constants + session ID + install-time entropy.
     // A persistent random salt is generated once and stored alongside the script,
     // so the key cannot be reconstructed from publicly guessable values alone.
-    $saltFile = sys_get_temp_dir() . '/databrowse_install_salt.bin';
+    $scriptDir = dirname((string)($_SERVER['SCRIPT_FILENAME'] ?? __FILE__));
+    $saltFile = $scriptDir . '/.databrowse_salt.bin';
+    // Fallback to temp dir if script dir is not writable
+    if (!is_writable($scriptDir)) {
+        $saltFile = sys_get_temp_dir() . '/databrowse_install_salt.bin';
+    }
     if (file_exists($saltFile)) {
         $salt = file_get_contents($saltFile);
     } else {
@@ -915,7 +936,7 @@ $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware)
         }
         if (!empty($col['auto_increment'])) $def .= ' AUTO_INCREMENT';
         if (!empty($col['primary'])) $def .= ' PRIMARY KEY';
-        if (!empty($col['comment'])) $def .= " COMMENT '" . $conn->real_escape_string($col['comment']) . "'";
+        if (!empty($col['comment'])) $def .= " COMMENT '" . $conn->real_escape_string((string)$col['comment']) . "'";
         $columns[] = $def;
     }
     $sql = "CREATE TABLE `{$tableName}` (\n  " . implode(",\n  ", $columns) . "\n) ENGINE={$engine} DEFAULT CHARSET={$charset}";
@@ -1203,7 +1224,10 @@ $router->post('/api/export/sql', function () use ($authMiddleware): void {
 
     foreach ($exporter->export(
         database: $db,
-        tables: $input['tables'] ?? [],
+        tables: array_map(
+            fn($t) => Security::sanitizeIdentifier((string)$t),
+            is_array($input['tables'] ?? null) ? $input['tables'] : []
+        ),
         includeStructure: $input['structure'] ?? true,
         includeData: $input['data'] ?? true,
         addDropTable: $input['drop_table'] ?? true,

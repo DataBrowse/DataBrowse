@@ -12,7 +12,7 @@ final class ConnectionManager {
         ?string $database = null,
         ?string $socket = null,
     ): mysqli {
-        $key = "{$username}@{$host}:{$port}";
+        $key = "{$username}@{$host}:{$port}" . ($socket ? ":sock:{$socket}" : '');
 
         if (isset(self::$connections[$key])) {
             try {
@@ -44,7 +44,7 @@ final class ConnectionManager {
         // Set session modes for consistent behavior
         $sqlMode = Config::get('security.sql_mode', 'TRADITIONAL');
         if (is_string($sqlMode) && $sqlMode !== '') {
-            $conn->query("SET SESSION sql_mode = " . $conn->real_escape_string($sqlMode));
+            $conn->query("SET SESSION sql_mode = '" . $conn->real_escape_string($sqlMode) . "'");
         }
         $conn->query("SET SESSION group_concat_max_len = 1048576");
 

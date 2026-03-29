@@ -78,9 +78,17 @@ final class SchemaCompare {
                             'target' => $targetCol,
                         ];
                         $nullable = $sourceCol['nullable'] === 'YES' ? '' : ' NOT NULL';
-                        $default = $sourceCol['default_value'] !== null
-                            ? " DEFAULT '" . $this->conn->real_escape_string($sourceCol['default_value']) . "'"
-                            : '';
+                        $defaultValue = $sourceCol['default_value'];
+                        $expressionDefaults = ['CURRENT_TIMESTAMP', 'CURRENT_DATE', 'CURRENT_TIME', 'NULL', 'TRUE', 'FALSE'];
+                        if ($defaultValue === null) {
+                            $default = $sourceCol['nullable'] === 'YES' ? ' DEFAULT NULL' : '';
+                        } elseif (in_array(strtoupper($defaultValue), $expressionDefaults, true)) {
+                            $default = ' DEFAULT ' . strtoupper($defaultValue);
+                        } elseif (is_numeric($defaultValue)) {
+                            $default = ' DEFAULT ' . $defaultValue;
+                        } else {
+                            $default = " DEFAULT '" . $this->conn->real_escape_string($defaultValue) . "'";
+                        }
                         $alters[] = "ALTER TABLE `{$escTable}` MODIFY COLUMN `{$escName}` {$sourceCol['column_type']}{$nullable}{$default};";
                     }
                 }
