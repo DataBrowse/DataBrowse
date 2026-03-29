@@ -1859,6 +1859,18 @@ if (str_starts_with($uri, '/api/')) {
 
 // Frontend SPA — serve embedded HTML
 header('Content-Type: text/html; charset=utf-8');
+// Compute base URL for API calls — handles both rewrite and direct .php access
+$scriptName = $_SERVER['SCRIPT_NAME'] ?? '';
+$baseUrl = '';
+if (str_contains($scriptName, '.php')) {
+    // Direct access: /path/databrowse.php → base = /path/databrowse.php/
+    $baseUrl = rtrim($scriptName, '/') . '/';
+} else {
+    // URL rewrite: /path/ → base = /path/
+    $baseUrl = rtrim(dirname($scriptName), '/') . '/';
+}
+
 $html = str_replace('{{CSP_NONCE}}', $nonce, FRONTEND_HTML);
 $html = str_replace('{{VERSION}}', DATABROWSE_VERSION, $html);
+$html = str_replace('{{BASE_URL}}', htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'), $html);
 echo $html;

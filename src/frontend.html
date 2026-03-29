@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <base href="{{BASE_URL}}">
     <title>DataBrowse</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><ellipse cx='50' cy='30' rx='40' ry='15' fill='%234f46e5'/><path d='M10 30v40c0 8.28 17.9 15 40 15s40-6.72 40-15V30' fill='none' stroke='%234f46e5' stroke-width='4'/><ellipse cx='50' cy='50' rx='40' ry='15' fill='none' stroke='%234f46e5' stroke-width='4'/><ellipse cx='50' cy='70' rx='40' ry='15' fill='none' stroke='%234f46e5' stroke-width='4'/></svg>">
 
@@ -1108,7 +1109,7 @@ document.addEventListener('alpine:init', () => {
                     </div>
                 </div>
 
-                <div x-show="diff">
+                <div x-show="diff && (diff.only_in_source?.length || diff.only_in_target?.length || diff.different?.length || diff.identical?.length)">
                     <div x-show="diff?.only_in_source?.length > 0" class="mb-3">
                         <h4 class="text-sm font-medium text-green-600 mb-1">Only in source:</h4>
                         <template x-for="t in diff.only_in_source" :key="t"><span class="inline-block px-2 py-0.5 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded mr-1 mb-1" x-text="t"></span></template>
@@ -1623,7 +1624,8 @@ function routineViewer() {
 
 function schemaCompare() {
     return {
-        sourceDb: '', targetDb: '', diff: null,
+        sourceDb: '', targetDb: '',
+        diff: { only_in_source: [], only_in_target: [], different: [], identical: [], alter_statements: [] },
         async compare() {
             if (!this.sourceDb || !this.targetDb) return;
             try {
