@@ -374,15 +374,41 @@ $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware)
     $conn = getConnection();
     $conn->select_db($db);
 
+    if (!isset($input['columns']) || !is_array($input['columns']) || $input['columns'] === []) {
+        http_response_code(400);
+        return ['error' => 'At least one column definition is required'];
+    }
+
     $columns = [];
     foreach ($input['columns'] as $col) {
-        $colType = strtoupper(trim($col['type']));
+        if (!is_array($col) || !isset($col['name'], $col['type'])) {
+            http_response_code(400);
+            return ['error' => 'Each column must include name and type'];
+        }
+
+        $colName = (string)$col['name'];
+        $rawType = (string)$col['type'];
+        $colType = strtoupper(trim($rawType));
         if (!in_array($colType, $allowedTypes, true)) {
             http_response_code(400);
             return ['error' => 'Invalid column type: ' . htmlspecialchars((string)$col['type'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')];
         }
-        $def = '`' . Security::sanitizeIdentifier($col['name']) . '` ' . $colType;
-        if (!empty($col['length'])) $def .= '(' . (int)$col['length'] . ')';
+        try {
+            $safeColName = Security::sanitizeIdentifier($colName);
+        } catch (\InvalidArgumentException) {
+            http_response_code(400);
+            return ['error' => 'Invalid column name: ' . htmlspecialchars($colName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')];
+        }
+
+        $def = '`' . $safeColName . '` ' . strtoupper(trim($rawType));
+
+        if (isset($col['length']) && $col['length'] !== '' && $col['length'] !== null) {
+            if (!is_numeric($col['length']) || (int)$col['length'] < 1) {
+                http_response_code(400);
+                return ['error' => 'Invalid column length for ' . htmlspecialchars($colName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')];
+            }
+            $def .= '(' . (int)$col['length'] . ')';
+        }
         if (!($col['nullable'] ?? true)) $def .= ' NOT NULL';
         if (isset($col['default'])) {
             $def .= " DEFAULT " . (is_numeric($col['default'])
@@ -741,7 +767,11 @@ $router->get('/api/server/processes', function () use ($authMiddleware): array {
 $router->post('/api/server/kill/{id}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $conn = getConnection();
-    $processId = (int)$params['id'];
+    $processId = filter_var($params['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    if ($processId === false) {
+        http_response_code(400);
+        return ['error' => 'Invalid process id'];
+    }
     $conn->query("KILL {$processId}");
     return ['success' => true];
 });
@@ -784,15 +814,54 @@ $router->get('/api/routines/{db}', function (array $params) use ($authMiddleware
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $conn = getConnection();
-    $conn->select_db($db);
 
-    $escapedDb = $conn->real_escape_string($db);
+    $fetchForSchema = static function (mysqli $conn, string $sql, string $schema): array {
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param('s', $schema);
+        $stmt->execute();
+        return $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    };
 
-    $procedures = $conn->query("SHOW PROCEDURE STATUS WHERE Db = '{$escapedDb}'")->fetch_all(MYSQLI_ASSOC);
-    $functions = $conn->query("SHOW FUNCTION STATUS WHERE Db = '{$escapedDb}'")->fetch_all(MYSQLI_ASSOC);
-    $triggers = $conn->query("SELECT * FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = '{$escapedDb}'")->fetch_all(MYSQLI_ASSOC);
-    $events = $conn->query("SELECT * FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = '{$escapedDb}'")->fetch_all(MYSQLI_ASSOC);
-    $views = $conn->query("SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = '{$escapedDb}'")->fetch_all(MYSQLI_ASSOC);
+    $procedures = $fetchForSchema(
+        $conn,
+        "SELECT ROUTINE_NAME AS Name, ROUTINE_TYPE AS Type, DEFINER, CREATED, LAST_ALTERED, SECURITY_TYPE
+         FROM INFORMATION_SCHEMA.ROUTINES
+         WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE'
+         ORDER BY ROUTINE_NAME",
+        $db
+    );
+    $functions = $fetchForSchema(
+        $conn,
+        "SELECT ROUTINE_NAME AS Name, ROUTINE_TYPE AS Type, DEFINER, CREATED, LAST_ALTERED, SECURITY_TYPE
+         FROM INFORMATION_SCHEMA.ROUTINES
+         WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION'
+         ORDER BY ROUTINE_NAME",
+        $db
+    );
+    $triggers = $fetchForSchema(
+        $conn,
+        "SELECT TRIGGER_NAME, EVENT_MANIPULATION, EVENT_OBJECT_TABLE, ACTION_TIMING, ACTION_STATEMENT, DEFINER
+         FROM INFORMATION_SCHEMA.TRIGGERS
+         WHERE TRIGGER_SCHEMA = ?
+         ORDER BY TRIGGER_NAME",
+        $db
+    );
+    $events = $fetchForSchema(
+        $conn,
+        "SELECT EVENT_NAME, STATUS, EVENT_TYPE, EXECUTE_AT, INTERVAL_VALUE, INTERVAL_FIELD, DEFINER
+         FROM INFORMATION_SCHEMA.EVENTS
+         WHERE EVENT_SCHEMA = ?
+         ORDER BY EVENT_NAME",
+        $db
+    );
+    $views = $fetchForSchema(
+        $conn,
+        "SELECT TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, IS_UPDATABLE
+         FROM INFORMATION_SCHEMA.VIEWS
+         WHERE TABLE_SCHEMA = ?
+         ORDER BY TABLE_NAME",
+        $db
+    );
 
     return [
         'procedures' => $procedures,

@@ -17,6 +17,8 @@ final class DataManager {
         array $filters = [],
     ): array {
         $this->conn->select_db($database);
+        $page = max(1, $page);
+        $limit = max(1, min(5000, $limit));
         $offset = ($page - 1) * $limit;
         $order = strtoupper($order) === 'DESC' ? 'DESC' : 'ASC';
 
@@ -26,21 +28,21 @@ final class DataManager {
 
         // Column filters
         foreach ($filters as $col => $val) {
-            $escapedCol = str_replace('`', '``', $col);
+            $escapedCol = str_replace('`', '``', (string)$col);
             $whereClauses[] = "`{$escapedCol}` LIKE ?";
-            $whereValues[] = "%{$val}%";
+            $whereValues[] = '%' . (string)$val . '%';
             $whereTypes .= 's';
         }
 
         // Global search
-        if ($search) {
+        if ($search !== null && $search !== '') {
             $inspector = new SchemaInspector($this->conn);
             $columns = $inspector->getColumns($database, $table);
             $searchClauses = [];
             foreach ($columns as $col) {
                 $escapedCol = str_replace('`', '``', $col['name']);
                 $searchClauses[] = "`{$escapedCol}` LIKE ?";
-                $whereValues[] = "%{$search}%";
+                $whereValues[] = '%' . $search . '%';
                 $whereTypes .= 's';
             }
             if (!empty($searchClauses)) {
@@ -65,7 +67,7 @@ final class DataManager {
         // Data query
         $dataSql = "SELECT * FROM `{$escapedTable}`{$whereSQL}";
         if ($sort) {
-            $escapedSort = str_replace('`', '``', $sort);
+            $escapedSort = str_replace('`', '``', Security::sanitizeIdentifier($sort));
             $dataSql .= " ORDER BY `{$escapedSort}` {$order}";
         }
         $dataSql .= " LIMIT {$limit} OFFSET {$offset}";
