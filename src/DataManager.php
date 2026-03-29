@@ -34,14 +34,26 @@ final class DataManager {
             $whereTypes .= 's';
         }
 
-        // Global search
+        // Global search — only search text-compatible columns to avoid
+        // full table scans on BLOB/binary columns and improve performance
         if ($search !== null && $search !== '') {
             $inspector = new SchemaInspector($this->conn);
             $columns = $inspector->getColumns($database, $table);
+            $searchableTypes = [
+                'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext',
+                'enum', 'set', 'json',
+                'int', 'tinyint', 'smallint', 'mediumint', 'bigint',
+                'decimal', 'numeric', 'float', 'double',
+                'date', 'datetime', 'timestamp', 'time', 'year',
+            ];
             $searchClauses = [];
             foreach ($columns as $col) {
+                $dataType = strtolower($col['data_type'] ?? '');
+                if (!in_array($dataType, $searchableTypes, true)) {
+                    continue;
+                }
                 $escapedCol = str_replace('`', '``', $col['name']);
-                $searchClauses[] = "`{$escapedCol}` LIKE ?";
+                $searchClauses[] = "CAST(`{$escapedCol}` AS CHAR) LIKE ?";
                 $whereValues[] = '%' . $search . '%';
                 $whereTypes .= 's';
             }

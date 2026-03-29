@@ -262,7 +262,7 @@ function getJsonInput(): array {
         throw new ApiException('Content-Type must be application/json', 415);
     }
 
-    $security = $GLOBALS['config']['security'] ?? [];
+    $security = Config::get('security') ?? [];
     $maxBodyBytes = max(1024, (int)($security['max_request_body_bytes'] ?? 1048576));
     $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($contentLength > $maxBodyBytes) {
@@ -434,7 +434,7 @@ function validateAccountPart(string $value, string $field, int $maxLen): ?array 
 }
 
 function writeAuditLog(string $event, array $context = []): void {
-    $security = $GLOBALS['config']['security'] ?? [];
+    $security = Config::get('security') ?? [];
     if (!(bool)($security['audit_log_enabled'] ?? true)) {
         return;
     }
@@ -758,7 +758,7 @@ function validateUploadedFile(
 }
 
 function getSessionEncryptionKey(): string {
-    $security = $GLOBALS['config']['security'] ?? [];
+    $security = Config::get('security') ?? [];
     $configuredSecret = $security['session_secret'] ?? '';
     if (is_string($configuredSecret) && $configuredSecret !== '') {
         return hash('sha256', $configuredSecret, true);
@@ -1136,7 +1136,7 @@ $router->post('/api/query/explain', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $input = getJsonInput();
     $sql = (string)($input['sql'] ?? '');
-    $security = $GLOBALS['config']['security'] ?? [];
+    $security = Config::get('security') ?? [];
     $maxSqlLength = max(1, (int)($security['max_sql_length'] ?? 200000));
     if (mb_strlen($sql, 'UTF-8') > $maxSqlLength) {
         http_response_code(413);

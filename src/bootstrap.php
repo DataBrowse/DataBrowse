@@ -321,6 +321,10 @@ function validateConfig(array $config): array {
     $config['security']['audit_log_path'] = is_string($config['security']['audit_log_path'] ?? null)
         ? trim($config['security']['audit_log_path'])
         : '';
+    $sqlMode = $config['security']['sql_mode'] ?? 'TRADITIONAL';
+    $config['security']['sql_mode'] = is_string($sqlMode) && preg_match('/^[A-Za-z0-9_,\s]*$/', $sqlMode)
+        ? trim($sqlMode)
+        : 'TRADITIONAL';
 
     return $config;
 }
@@ -350,6 +354,7 @@ function getDefaultConfig(): array {
             'blocked_sql_patterns' => ['INTO OUTFILE', 'INTO DUMPFILE', 'LOAD DATA', 'LOAD_FILE('],
             'audit_log_enabled' => true,
             'audit_log_path' => '',
+            'sql_mode' => 'TRADITIONAL',
             'force_https' => false,
             'allow_root_login' => false,
             'read_only_mode' => false,
@@ -377,8 +382,29 @@ function getDefaultConfig(): array {
     ];
 }
 
+// Static config holder — replaces $GLOBALS['config'] for cleaner access
+final class Config {
+    private static array $config = [];
+
+    public static function init(array $config): void {
+        self::$config = $config;
+    }
+
+    public static function get(?string $key = null, mixed $default = null): mixed {
+        if ($key === null) return self::$config;
+        $keys = explode('.', $key);
+        $value = self::$config;
+        foreach ($keys as $k) {
+            if (!is_array($value) || !array_key_exists($k, $value)) return $default;
+            $value = $value[$k];
+        }
+        return $value;
+    }
+}
+
 if (!defined('DATABROWSE_TESTING')) {
     $config = loadConfig();
+    Config::init($config);
 
     // HTTPS force
     if ($config['security']['force_https'] && !empty($_SERVER['HTTP_HOST']) && empty($_SERVER['HTTPS'])) {

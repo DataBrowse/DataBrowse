@@ -48,25 +48,21 @@ final class UserManager {
 
     public function grantPrivilege(string $user, string $host, string $privilege, string $database, string $table = '*'): void {
         $priv = $this->sanitizePrivilege($privilege);
-        $db = $database === '*' ? '*' : '`' . Security::sanitizeIdentifier($database) . '`';
-        $tbl = $table === '*' ? '*' : '`' . Security::sanitizeIdentifier($table) . '`';
-        $this->conn->query(
-            "GRANT {$priv} ON {$db}.{$tbl} TO '"
-            . $this->conn->real_escape_string($user) . "'@'"
-            . $this->conn->real_escape_string($host) . "'"
-        );
+        $db = $database === '*' ? '*' : '`' . str_replace('`', '``', Security::sanitizeIdentifier($database)) . '`';
+        $tbl = $table === '*' ? '*' : '`' . str_replace('`', '``', Security::sanitizeIdentifier($table)) . '`';
+        $escapedUser = $this->conn->real_escape_string($user);
+        $escapedHost = $this->conn->real_escape_string($host);
+        $this->conn->query("GRANT {$priv} ON {$db}.{$tbl} TO '{$escapedUser}'@'{$escapedHost}'");
         $this->conn->query("FLUSH PRIVILEGES");
     }
 
     public function revokePrivilege(string $user, string $host, string $privilege, string $database, string $table = '*'): void {
         $priv = $this->sanitizePrivilege($privilege);
-        $db = $database === '*' ? '*' : '`' . Security::sanitizeIdentifier($database) . '`';
-        $tbl = $table === '*' ? '*' : '`' . Security::sanitizeIdentifier($table) . '`';
-        $this->conn->query(
-            "REVOKE {$priv} ON {$db}.{$tbl} FROM '"
-            . $this->conn->real_escape_string($user) . "'@'"
-            . $this->conn->real_escape_string($host) . "'"
-        );
+        $db = $database === '*' ? '*' : '`' . str_replace('`', '``', Security::sanitizeIdentifier($database)) . '`';
+        $tbl = $table === '*' ? '*' : '`' . str_replace('`', '``', Security::sanitizeIdentifier($table)) . '`';
+        $escapedUser = $this->conn->real_escape_string($user);
+        $escapedHost = $this->conn->real_escape_string($host);
+        $this->conn->query("REVOKE {$priv} ON {$db}.{$tbl} FROM '{$escapedUser}'@'{$escapedHost}'");
         $this->conn->query("FLUSH PRIVILEGES");
     }
 

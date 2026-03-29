@@ -42,7 +42,7 @@ final class ConnectionManager {
         $conn->set_charset('utf8mb4');
 
         // Set session modes for consistent behavior
-        $sqlMode = $GLOBALS['config']['security']['sql_mode'] ?? 'TRADITIONAL';
+        $sqlMode = Config::get('security.sql_mode', 'TRADITIONAL');
         if (is_string($sqlMode) && $sqlMode !== '') {
             $conn->query("SET SESSION sql_mode = " . $conn->real_escape_string($sqlMode));
         }

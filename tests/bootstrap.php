@@ -25,6 +25,9 @@ require_once __DIR__ . '/../src/UserManager.php';
 require_once __DIR__ . '/../src/ServerInfo.php';
 require_once __DIR__ . '/../src/SchemaCompare.php';
 
+// Initialize Config for tests.
+Config::init(getDefaultConfig());
+
 // Restore PHPUnit handlers (bootstrap.php overrides them).
 restore_error_handler();
 restore_exception_handler();
