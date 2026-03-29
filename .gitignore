@@ -2,6 +2,8 @@
 /databrowse.php
 /databrowse.config.json
 /databrowse.log
+/databrowse.audit.log
+.databrowse_salt.bin
 *.cache
 *.swp
 *.swo

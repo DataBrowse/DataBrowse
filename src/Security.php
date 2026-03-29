@@ -130,7 +130,7 @@ final class Security {
     // Content Security Policy and security headers
     public static function setSecurityHeaders(string $nonce): void {
         header("Content-Security-Policy: default-src 'self'; "
-            . "script-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
+            . "script-src 'self' 'nonce-{$nonce}' 'unsafe-eval' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
             . "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
             . "font-src 'self' https://cdn.jsdelivr.net; "
             . "connect-src 'self'; "
