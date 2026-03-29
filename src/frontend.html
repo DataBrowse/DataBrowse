@@ -834,7 +834,7 @@ document.addEventListener('alpine:init', () => {
 
             <!-- EXPORT VIEW -->
             <div x-show="$store.app.currentView === 'export'" x-data="exportPanel()"
-                 x-init="$watch('$store.app.currentView', v => { if(v === 'export' && !selectedTable && $store.app.tables.length > 0) selectedTable = $store.app.tables[0].name; })"
+                 x-init="$watch('$store.app.currentView', v => { if(v === 'export' && !selectedTable && $store.app.tables.length > 0) selectedTable = $store.app.tables[0].name; })">
                 <h2 class="text-xl font-bold mb-4">Export <span class="text-sm font-normal text-gray-500" x-text="'— ' + $store.app.currentDb"></span></h2>
                 <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-6 max-w-lg">
                     <div class="space-y-4">
