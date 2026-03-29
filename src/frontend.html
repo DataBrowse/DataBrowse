@@ -1441,7 +1441,7 @@ function exportPanel() {
                 body = { database: db, table: this.selectedTable };
             }
             try {
-                const res = await fetch(url, {
+                const res = await fetch(app._apiUrl(url), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': app.csrfToken || '' },
                     body: JSON.stringify(body)
