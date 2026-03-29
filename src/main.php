@@ -555,7 +555,7 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
         filePath: $file['tmp_name'],
         database: $database,
         table: $table,
-        delimiter: $_POST['delimiter'] ?? ',',
+        delimiter: substr($_POST['delimiter'] ?? ',', 0, 1) ?: ',',
         hasHeader: ($_POST['has_header'] ?? '1') === '1',
     );
 
