@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 // === Version & Constants ===
-define('DATABROWSE_VERSION', '0.0.1');
+define('DATABROWSE_VERSION', '0.0.2');
 define('DATABROWSE_MIN_PHP', '8.2.0');
 
 // PHP version check

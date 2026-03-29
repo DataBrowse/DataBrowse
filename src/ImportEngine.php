@@ -28,6 +28,7 @@ final class SQLImporter {
         string $filePath,
         string $database,
         string $progressId,
+        bool $stopOnError = false,
     ): ImportResult {
         $this->conn->select_db($database);
         $this->conn->begin_transaction();
@@ -64,11 +65,23 @@ final class SQLImporter {
                         $this->executedStatements++;
                     } catch (\mysqli_sql_exception $e) {
                         $this->failedStatements++;
-                        $this->errors[] = [
-                            'statement' => mb_substr($stmt, 0, 200),
-                            'error'     => $e->getMessage(),
-                            'code'      => $e->getCode(),
-                        ];
+                        if (count($this->errors) < 20) {
+                            $this->errors[] = [
+                                'statement' => mb_substr($stmt, 0, 200),
+                                'error'     => $e->getMessage(),
+                                'code'      => $e->getCode(),
+                            ];
+                        }
+                        if ($stopOnError) {
+                            $this->conn->rollback();
+                            fclose($handle);
+                            return new ImportResult(
+                                totalStatements: $this->totalStatements,
+                                executedStatements: $this->executedStatements,
+                                failedStatements: $this->failedStatements,
+                                errors: $this->errors,
+                            );
+                        }
                     }
 
                     // Update progress every 100 statements
@@ -143,25 +156,32 @@ final class CSVImporter {
         $this->conn->begin_transaction();
 
         try {
+            $preparedStmt = null;
+            $colCount = null;
+            $types = null;
+
             while (($row = fgetcsv($handle, 0, $delimiter, $enclosure)) !== false) {
                 $total++;
                 if (!$headers) {
                     $headers = range(0, count($row) - 1);
                 }
 
-                $columns = array_map(
-                    fn($h) => '`' . str_replace('`', '``', $h) . '`',
-                    $headers
-                );
-                $placeholders = array_fill(0, count($row), '?');
-                $types = str_repeat('s', count($row));
-
-                $sql = "INSERT INTO `{$escapedTable}` (" . implode(',', $columns) . ") VALUES (" . implode(',', $placeholders) . ")";
+                // Prepare statement once, reuse for all rows with same column count
+                if ($preparedStmt === null || count($row) !== $colCount) {
+                    $colCount = count($row);
+                    $columns = array_map(
+                        fn($h) => '`' . str_replace('`', '``', $h) . '`',
+                        $headers
+                    );
+                    $placeholders = array_fill(0, $colCount, '?');
+                    $types = str_repeat('s', $colCount);
+                    $sql = "INSERT INTO `{$escapedTable}` (" . implode(',', $columns) . ") VALUES (" . implode(',', $placeholders) . ")";
+                    $preparedStmt = $this->conn->prepare($sql);
+                }
 
                 try {
-                    $stmt = $this->conn->prepare($sql);
-                    $stmt->bind_param($types, ...$row);
-                    $stmt->execute();
+                    $preparedStmt->bind_param($types, ...$row);
+                    $preparedStmt->execute();
                     $executed++;
                 } catch (\mysqli_sql_exception $e) {
                     $failed++;

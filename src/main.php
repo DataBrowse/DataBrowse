@@ -297,15 +297,10 @@ function getSessionEncryptionKey(): string {
         return hash('sha256', $configuredSecret, true);
     }
 
-    $encoded = $_SESSION['_enc_key'] ?? '';
-    $decoded = is_string($encoded) ? base64_decode($encoded, true) : false;
-    if (is_string($decoded) && strlen($decoded) === 32) {
-        return $decoded;
-    }
-
-    $generated = random_bytes(32);
-    $_SESSION['_enc_key'] = base64_encode($generated);
-    return $generated;
+    // Derive key from server-level constants + session ID so the key cannot
+    // be recovered from the session file alone
+    $material = __FILE__ . '|' . php_uname('n') . '|' . session_id();
+    return hash('sha256', $material, true);
 }
 
 // Helper: decrypt session password
@@ -478,8 +473,11 @@ $router->get('/api/data/{db}/{table}', function (array $params) use ($authMiddle
     $limit = min(500, max(1, (int)($_GET['limit'] ?? $config['ui']['rows_per_page'])));
     $sort = isset($_GET['sort']) && $_GET['sort'] !== '' ? $_GET['sort'] : null;
     if ($sort) { $sort = Security::sanitizeIdentifier($sort); }
-    $order = $_GET['order'] ?? 'ASC';
+    $order = strtoupper($_GET['order'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
     $search = $_GET['search'] ?? null;
+    if ($search !== null && mb_strlen($search, 'UTF-8') > 200) {
+        $search = mb_substr($search, 0, 200, 'UTF-8');
+    }
 
     $conn = getConnection();
     $dm = new DataManager($conn);
@@ -587,6 +585,23 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
     }
 
     $executor = new QueryExecutor($conn);
+
+    // Read-only mode: block write queries at the SQL level (not just HTTP method)
+    if ($config['security']['read_only_mode']) {
+        $queries = $executor->splitQueries($sql);
+        $readOnlyAllowed = [QueryType::SELECT, QueryType::SHOW, QueryType::DESCRIBE, QueryType::EXPLAIN];
+        foreach ($queries as $q) {
+            $trimmed = trim($q);
+            if ($trimmed === '') continue;
+            $token = strtok($trimmed, " \t\n\r");
+            $type = $token !== false ? (QueryType::tryFrom(strtoupper($token)) ?? QueryType::OTHER) : QueryType::OTHER;
+            if (!in_array($type, $readOnlyAllowed, true)) {
+                http_response_code(403);
+                return ['error' => 'Write queries are disabled in read-only mode'];
+            }
+        }
+    }
+
     $result = $executor->execute($sql, $limit);
 
     // Save to session history
@@ -635,15 +650,16 @@ $router->get('/api/query/history', function () use ($authMiddleware): array {
 
 // === Export Routes ===
 $router->post('/api/export/sql', function () use ($authMiddleware): void {
-    if ($err = ($authMiddleware)()) { echo json_encode($err); return; }
+    if ($err = ($authMiddleware)()) { header('Content-Type: application/json'); echo json_encode($err); return; }
     $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
 
     $conn = getConnection();
     $exporter = new SQLExporter($conn);
 
+    $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $db);
     header('Content-Type: application/sql');
-    header("Content-Disposition: attachment; filename=\"{$db}_" . date('Y-m-d_His') . ".sql\"");
+    header("Content-Disposition: attachment; filename=\"{$safeName}_" . date('Y-m-d_His') . ".sql\"");
 
     foreach ($exporter->export(
         database: $db,
@@ -658,7 +674,7 @@ $router->post('/api/export/sql', function () use ($authMiddleware): void {
 });
 
 $router->post('/api/export/csv', function () use ($authMiddleware): void {
-    if ($err = ($authMiddleware)()) { echo json_encode($err); return; }
+    if ($err = ($authMiddleware)()) { header('Content-Type: application/json'); echo json_encode($err); return; }
     $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
     $table = Security::sanitizeIdentifier($input['table']);
@@ -666,8 +682,9 @@ $router->post('/api/export/csv', function () use ($authMiddleware): void {
     $conn = getConnection();
     $exporter = new CSVExporter($conn);
 
+    $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $table);
     header('Content-Type: text/csv; charset=utf-8');
-    header("Content-Disposition: attachment; filename=\"{$table}_" . date('Y-m-d_His') . ".csv\"");
+    header("Content-Disposition: attachment; filename=\"{$safeName}_" . date('Y-m-d_His') . ".csv\"");
 
     foreach ($exporter->export($db, $table) as $chunk) {
         echo $chunk;
@@ -676,7 +693,7 @@ $router->post('/api/export/csv', function () use ($authMiddleware): void {
 });
 
 $router->post('/api/export/json', function () use ($authMiddleware): void {
-    if ($err = ($authMiddleware)()) { echo json_encode($err); return; }
+    if ($err = ($authMiddleware)()) { header('Content-Type: application/json'); echo json_encode($err); return; }
     $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
     $table = Security::sanitizeIdentifier($input['table']);
@@ -684,8 +701,9 @@ $router->post('/api/export/json', function () use ($authMiddleware): void {
     $conn = getConnection();
     $exporter = new JSONExporter($conn);
 
+    $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $table);
     header('Content-Type: application/json');
-    header("Content-Disposition: attachment; filename=\"{$table}_" . date('Y-m-d_His') . ".json\"");
+    header("Content-Disposition: attachment; filename=\"{$safeName}_" . date('Y-m-d_His') . ".json\"");
 
     foreach ($exporter->export($db, $table) as $chunk) {
         echo $chunk;
@@ -724,7 +742,8 @@ $router->post('/api/import/sql', function () use ($authMiddleware, $config): arr
 
     $conn = getConnection();
     $importer = new SQLImporter($conn);
-    $result = $importer->import($file['tmp_name'], $database, $progressId);
+    $stopOnError = (bool)($config['import']['stop_on_error'] ?? false);
+    $result = $importer->import($file['tmp_name'], $database, $progressId, $stopOnError);
 
     return [
         'success' => true,
@@ -832,26 +851,48 @@ $router->get('/api/users', function () use ($authMiddleware): array {
 
 $router->get('/api/users/{user}/{host}/privileges', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
+    $user = $params['user'];
+    $host = $params['host'];
+    if (strlen($user) > 32 || strlen($host) > 255) {
+        http_response_code(400);
+        return ['error' => 'Invalid user or host length'];
+    }
     $conn = getConnection();
     $userMgr = new UserManager($conn);
-    return ['privileges' => $userMgr->getPrivileges($params['user'], $params['host'])];
+    return ['privileges' => $userMgr->getPrivileges($user, $host)];
 });
 
 $router->post('/api/users', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $input = getJsonInput();
+    if ($err = requireFields($input, ['user', 'password'])) return $err;
+    $user = (string)$input['user'];
+    $host = (string)($input['host'] ?? '%');
+    if ($user === '' || strlen($user) > 32) {
+        http_response_code(400);
+        return ['error' => 'Username must be 1-32 characters'];
+    }
+    if (strlen($host) > 255) {
+        http_response_code(400);
+        return ['error' => 'Host must be at most 255 characters'];
+    }
     $conn = getConnection();
     $userMgr = new UserManager($conn);
-    if ($err = requireFields($input, ['user', 'password'])) return $err;
-    $userMgr->createUser($input['user'], $input['host'] ?? '%', $input['password']);
+    $userMgr->createUser($user, $host, $input['password']);
     return ['success' => true];
 });
 
 $router->delete('/api/users/{user}/{host}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
+    $user = $params['user'];
+    $host = $params['host'];
+    if (strlen($user) > 32 || strlen($host) > 255) {
+        http_response_code(400);
+        return ['error' => 'Invalid user or host length'];
+    }
     $conn = getConnection();
     $userMgr = new UserManager($conn);
-    $userMgr->dropUser($params['user'], $params['host']);
+    $userMgr->dropUser($user, $host);
     return ['success' => true];
 });
 

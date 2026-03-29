@@ -14,9 +14,14 @@ final class ConnectionManager {
     ): mysqli {
         $key = "{$username}@{$host}:{$port}";
 
-        if (isset(self::$connections[$key]) && self::$connections[$key]->ping()) {
-            if ($database) self::$connections[$key]->select_db($database);
-            return self::$connections[$key];
+        if (isset(self::$connections[$key])) {
+            try {
+                self::$connections[$key]->query('SELECT 1');
+                if ($database) self::$connections[$key]->select_db($database);
+                return self::$connections[$key];
+            } catch (\mysqli_sql_exception) {
+                unset(self::$connections[$key]);
+            }
         }
 
         mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);

@@ -227,6 +227,7 @@ final class QueryExecutor {
         $queries = [];
         $current = '';
         $inString = false;
+        $inBacktick = false;
         $stringChar = '';
         $escaped = false;
 
@@ -239,26 +240,88 @@ final class QueryExecutor {
                 continue;
             }
 
-            if ($char === '\\') {
+            if ($char === '\\' && $inString) {
                 $current .= $char;
                 $escaped = true;
                 continue;
             }
 
-            if (!$inString && ($char === '\'' || $char === '"')) {
+            // Inside backtick-quoted identifier
+            if ($inBacktick) {
+                $current .= $char;
+                if ($char === '`') {
+                    // Check for escaped backtick (``)
+                    if ($i + 1 < $len && $sql[$i + 1] === '`') {
+                        $current .= $sql[++$i];
+                    } else {
+                        $inBacktick = false;
+                    }
+                }
+                continue;
+            }
+
+            // Inside string literal
+            if ($inString) {
+                $current .= $char;
+                if ($char === $stringChar) {
+                    $inString = false;
+                }
+                continue;
+            }
+
+            // -- line comment
+            if ($char === '-' && $i + 1 < $len && $sql[$i + 1] === '-') {
+                $eol = strpos($sql, "\n", $i);
+                if ($eol === false) {
+                    $current .= substr($sql, $i);
+                    break;
+                }
+                $current .= substr($sql, $i, $eol - $i + 1);
+                $i = $eol;
+                continue;
+            }
+
+            // # line comment
+            if ($char === '#') {
+                $eol = strpos($sql, "\n", $i);
+                if ($eol === false) {
+                    $current .= substr($sql, $i);
+                    break;
+                }
+                $current .= substr($sql, $i, $eol - $i + 1);
+                $i = $eol;
+                continue;
+            }
+
+            // /* block comment */
+            if ($char === '/' && $i + 1 < $len && $sql[$i + 1] === '*') {
+                $end = strpos($sql, '*/', $i + 2);
+                if ($end === false) {
+                    $current .= substr($sql, $i);
+                    break;
+                }
+                $current .= substr($sql, $i, $end - $i + 2);
+                $i = $end + 1;
+                continue;
+            }
+
+            // Start backtick identifier
+            if ($char === '`') {
+                $inBacktick = true;
+                $current .= $char;
+                continue;
+            }
+
+            // Start string literal
+            if ($char === '\'' || $char === '"') {
                 $inString = true;
                 $stringChar = $char;
                 $current .= $char;
                 continue;
             }
 
-            if ($inString && $char === $stringChar) {
-                $inString = false;
-                $current .= $char;
-                continue;
-            }
-
-            if (!$inString && $char === ';') {
+            // Statement separator
+            if ($char === ';') {
                 $trimmed = trim($current);
                 if ($trimmed !== '') $queries[] = $trimmed;
                 $current = '';

@@ -178,11 +178,24 @@ final class DataManager {
 
     public function batchDelete(string $database, string $table, array $rows): int {
         $this->conn->select_db($database);
+        $escapedTable = str_replace('`', '``', $table);
         $this->conn->begin_transaction();
         try {
             $total = 0;
             foreach ($rows as $where) {
-                $total += $this->deleteRow($database, $table, $where);
+                if (empty($where)) continue;
+                $whereClauses = [];
+                $values = [];
+                foreach ($where as $col => $val) {
+                    $whereClauses[] = '`' . str_replace('`', '``', $col) . '` = ?';
+                    $values[] = $val;
+                }
+                $sql = "DELETE FROM `{$escapedTable}` WHERE " . implode(' AND ', $whereClauses) . " LIMIT 1";
+                $stmt = $this->conn->prepare($sql);
+                $types = str_repeat('s', count($values));
+                $stmt->bind_param($types, ...$values);
+                $stmt->execute();
+                $total += $stmt->affected_rows;
             }
             $this->conn->commit();
             return $total;

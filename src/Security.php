@@ -36,6 +36,11 @@ final class Security {
             return false;
         }
 
+        // Probabilistic cleanup of stale rate limit files (1% chance per call)
+        if (random_int(1, 100) === 1) {
+            self::cleanupRateLimitFiles($dir, $window);
+        }
+
         $file = $dir . '/' . md5($key) . '.json';
         $handle = fopen($file, 'c+');
         if ($handle === false) {
@@ -81,6 +86,18 @@ final class Security {
         }
     }
 
+    private static function cleanupRateLimitFiles(string $dir, int $window): void {
+        $files = glob($dir . '/*.json');
+        if (!is_array($files)) return;
+        $now = time();
+        foreach ($files as $f) {
+            $mtime = @filemtime($f);
+            if ($mtime !== false && ($now - $mtime) > $window * 2) {
+                @unlink($f);
+            }
+        }
+    }
+
     // IP whitelist check with CIDR support
     public static function checkIPWhitelist(array $whitelist, array $trustedProxies = []): bool {
         if (empty($whitelist)) return true;
@@ -121,7 +138,7 @@ final class Security {
 
     // SQL identifier validation
     public static function sanitizeIdentifier(string $identifier): string {
-        if (!preg_match('/^[a-zA-Z0-9_\-$.]+$/', $identifier)) {
+        if ($identifier === '' || !preg_match('/^[a-zA-Z0-9_\-$]+$/', $identifier)) {
             throw new \InvalidArgumentException("Invalid SQL identifier: {$identifier}");
         }
         return $identifier;
