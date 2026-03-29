@@ -9,6 +9,15 @@ final class Security {
         $token = bin2hex(random_bytes(self::TOKEN_LENGTH / 2));
         $_SESSION['csrf_token'] = $token;
         $_SESSION['csrf_time'] = time();
+        if (PHP_SAPI !== 'cli' && !headers_sent()) {
+            setcookie('databrowse_csrf', $token, [
+                'expires' => 0,
+                'path' => '/',
+                'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+                'httponly' => false,
+                'samesite' => 'Strict',
+            ]);
+        }
         return $token;
     }
 
@@ -19,6 +28,11 @@ final class Security {
 
         // Token valid for 1 hour
         if (time() - $_SESSION['csrf_time'] > 3600) {
+            return false;
+        }
+
+        $cookieToken = $_COOKIE['databrowse_csrf'] ?? null;
+        if (is_string($cookieToken) && $cookieToken !== '' && !hash_equals($cookieToken, $token)) {
             return false;
         }
 
@@ -128,9 +142,12 @@ final class Security {
 
         header("X-Content-Type-Options: nosniff");
         header("X-Frame-Options: DENY");
-        header("X-XSS-Protection: 1; mode=block");
         header("Referrer-Policy: strict-origin-when-cross-origin");
         header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
+        header("Cross-Origin-Opener-Policy: same-origin");
+        header("Cross-Origin-Resource-Policy: same-origin");
+        header("X-Permitted-Cross-Domain-Policies: none");
+        header("Origin-Agent-Cluster: ?1");
         if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
             header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
         }

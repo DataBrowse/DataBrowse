@@ -747,7 +747,7 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- SQL EDITOR VIEW -->
-            <div x-show="$store.app.currentView === 'query'" x-data="queryEditor()"
+            <div x-show="$store.app.currentView === 'query'" x-data="queryEditor()" x-init="init()"
                  @keydown.ctrl.enter.prevent="executeQuery()" @keydown.meta.enter.prevent="executeQuery()">
                 <h2 class="text-xl font-bold mb-3">SQL Editor <span class="text-sm font-normal text-gray-500" x-show="$store.app.currentDb" x-text="'— ' + $store.app.currentDb"></span></h2>
 
@@ -762,9 +762,26 @@ document.addEventListener('alpine:init', () => {
                     </button>
                     <button @click="explainQuery()" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Explain</button>
                     <button @click="showHistory = !showHistory" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">History</button>
+                    <button @click="saveBookmark()" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Save Bookmark</button>
                     <span x-show="lastElapsed" class="text-sm text-gray-500">
                         Executed in <span x-text="lastElapsed"></span>ms
                     </span>
+                </div>
+
+                <!-- Bookmarks -->
+                <div class="mb-4 border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+                    <h4 class="text-sm font-medium mb-2">Bookmarks</h4>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <select x-model="selectedBookmark" class="px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 outline-none min-w-64">
+                            <option value="">Select bookmark...</option>
+                            <template x-for="(b, i) in bookmarks" :key="i">
+                                <option :value="String(i)" x-text="b.name"></option>
+                            </template>
+                        </select>
+                        <button @click="loadBookmark()" class="px-3 py-2 bg-gray-200 dark:bg-gray-700 text-sm rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600">Load</button>
+                        <button @click="deleteBookmark()" class="px-3 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700">Delete</button>
+                    </div>
+                    <div x-show="bookmarks.length === 0" class="text-xs text-gray-400 mt-2">No bookmarks yet</div>
                 </div>
 
                 <!-- History panel -->
@@ -1023,6 +1040,15 @@ document.addEventListener('alpine:init', () => {
                 <!-- Privileges display -->
                 <div x-show="selectedUser" class="mt-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                     <h3 class="font-medium mb-2">Privileges for <span x-text="selectedUser"></span></h3>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+                        <input type="text" x-model="privilege" placeholder="PRIVILEGE (e.g. SELECT)" class="px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 outline-none">
+                        <input type="text" x-model="privDb" placeholder="Database or *" class="px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 outline-none">
+                        <input type="text" x-model="privTable" placeholder="Table or *" class="px-3 py-2 border rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 outline-none">
+                        <div class="flex gap-2">
+                            <button @click="grantPrivilege()" class="px-3 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Grant</button>
+                            <button @click="revokePrivilege()" class="px-3 py-2 bg-yellow-600 text-white text-sm rounded-lg hover:bg-yellow-700">Revoke</button>
+                        </div>
+                    </div>
                     <template x-for="(g, i) in grants" :key="i">
                         <pre class="text-xs font-mono bg-gray-50 dark:bg-gray-900 p-2 rounded mb-1" x-text="g"></pre>
                     </template>
@@ -1309,6 +1335,52 @@ function queryEditor() {
     return {
         sql: '', result: null, lastElapsed: null,
         showHistory: false, history: [],
+        bookmarks: [],
+        selectedBookmark: '',
+        init() {
+            const raw = localStorage.getItem('databrowse.queryBookmarks');
+            if (!raw) return;
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    this.bookmarks = parsed.filter(b => typeof b?.name === 'string' && typeof b?.sql === 'string');
+                }
+            } catch (_) {}
+        },
+        persistBookmarks() {
+            localStorage.setItem('databrowse.queryBookmarks', JSON.stringify(this.bookmarks.slice(0, 100)));
+        },
+        saveBookmark() {
+            const text = this.sql.trim();
+            if (!text) return;
+            const name = prompt('Bookmark name:', text.substring(0, 60));
+            if (!name || !name.trim()) return;
+            const finalName = name.trim().substring(0, 120);
+            const existing = this.bookmarks.findIndex(b => b.name === finalName);
+            if (existing >= 0) {
+                this.bookmarks[existing] = { name: finalName, sql: text };
+            } else {
+                this.bookmarks.unshift({ name: finalName, sql: text });
+            }
+            this.persistBookmarks();
+            Alpine.store('toast').success('Bookmark saved');
+        },
+        loadBookmark() {
+            if (this.selectedBookmark === '') return;
+            const idx = parseInt(this.selectedBookmark, 10);
+            const item = this.bookmarks[idx];
+            if (!item) return;
+            this.sql = item.sql;
+        },
+        deleteBookmark() {
+            if (this.selectedBookmark === '') return;
+            const idx = parseInt(this.selectedBookmark, 10);
+            if (Number.isNaN(idx) || !this.bookmarks[idx]) return;
+            this.bookmarks.splice(idx, 1);
+            this.selectedBookmark = '';
+            this.persistBookmarks();
+            Alpine.store('toast').success('Bookmark removed');
+        },
         async executeQuery() {
             if (!this.sql.trim()) return;
             try {
@@ -1461,7 +1533,8 @@ function processViewer() {
 function userManager() {
     return {
         users: [], showCreate: false, newUser: '', newHost: '%', newPass: '',
-        selectedUser: null, grants: [],
+        selectedUser: null, selectedUserName: '', selectedHost: '',
+        grants: [], privilege: 'SELECT', privDb: '*', privTable: '*',
         init() { this.loadUsers(); },
         async loadUsers() {
             try {
@@ -1490,11 +1563,37 @@ function userManager() {
         },
         async viewPrivileges(user, host) {
             this.selectedUser = user + '@' + host;
+            this.selectedUserName = user;
+            this.selectedHost = host;
             try {
                 const data = await Alpine.store('app').api('GET', 'api/users/' + encodeURIComponent(user) + '/' + encodeURIComponent(host) + '/privileges');
                 this.grants = data.privileges?.grants || [];
             } catch (e) { Alpine.store('toast').error(e.message); }
-        }
+        },
+        async grantPrivilege() {
+            if (!this.selectedUserName || !this.selectedHost) return;
+            try {
+                await Alpine.store('app').api(
+                    'POST',
+                    'api/users/' + encodeURIComponent(this.selectedUserName) + '/' + encodeURIComponent(this.selectedHost) + '/grant',
+                    { privilege: this.privilege, database: this.privDb || '*', table: this.privTable || '*' }
+                );
+                Alpine.store('toast').success('Privilege granted');
+                await this.viewPrivileges(this.selectedUserName, this.selectedHost);
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
+        async revokePrivilege() {
+            if (!this.selectedUserName || !this.selectedHost) return;
+            try {
+                await Alpine.store('app').api(
+                    'POST',
+                    'api/users/' + encodeURIComponent(this.selectedUserName) + '/' + encodeURIComponent(this.selectedHost) + '/revoke',
+                    { privilege: this.privilege, database: this.privDb || '*', table: this.privTable || '*' }
+                );
+                Alpine.store('toast').success('Privilege revoked');
+                await this.viewPrivileges(this.selectedUserName, this.selectedHost);
+            } catch (e) { Alpine.store('toast').error(e.message); }
+        },
     };
 }
 

@@ -2,6 +2,15 @@
 declare(strict_types=1);
 
 final class UserManager {
+    private const ALLOWED_PRIVILEGES = [
+        'ALL PRIVILEGES',
+        'ALTER', 'ALTER ROUTINE', 'CREATE', 'CREATE ROUTINE', 'CREATE TABLESPACE', 'CREATE TEMPORARY TABLES',
+        'CREATE USER', 'CREATE VIEW', 'DELETE', 'DROP', 'EVENT', 'EXECUTE', 'FILE', 'GRANT OPTION',
+        'INDEX', 'INSERT', 'LOCK TABLES', 'PROCESS', 'REFERENCES', 'RELOAD', 'REPLICATION CLIENT',
+        'REPLICATION SLAVE', 'SELECT', 'SHOW DATABASES', 'SHOW VIEW', 'SHUTDOWN', 'SUPER', 'TRIGGER',
+        'UPDATE', 'USAGE',
+    ];
+
     public function __construct(
         private readonly mysqli $conn,
     ) {}
@@ -35,6 +44,38 @@ final class UserManager {
         $stmt = $this->conn->prepare("DROP USER ?@?");
         $stmt->bind_param('ss', $user, $host);
         $stmt->execute();
+    }
+
+    public function grantPrivilege(string $user, string $host, string $privilege, string $database, string $table = '*'): void {
+        $priv = $this->sanitizePrivilege($privilege);
+        $db = $database === '*' ? '*' : '`' . Security::sanitizeIdentifier($database) . '`';
+        $tbl = $table === '*' ? '*' : '`' . Security::sanitizeIdentifier($table) . '`';
+        $this->conn->query(
+            "GRANT {$priv} ON {$db}.{$tbl} TO '"
+            . $this->conn->real_escape_string($user) . "'@'"
+            . $this->conn->real_escape_string($host) . "'"
+        );
+        $this->conn->query("FLUSH PRIVILEGES");
+    }
+
+    public function revokePrivilege(string $user, string $host, string $privilege, string $database, string $table = '*'): void {
+        $priv = $this->sanitizePrivilege($privilege);
+        $db = $database === '*' ? '*' : '`' . Security::sanitizeIdentifier($database) . '`';
+        $tbl = $table === '*' ? '*' : '`' . Security::sanitizeIdentifier($table) . '`';
+        $this->conn->query(
+            "REVOKE {$priv} ON {$db}.{$tbl} FROM '"
+            . $this->conn->real_escape_string($user) . "'@'"
+            . $this->conn->real_escape_string($host) . "'"
+        );
+        $this->conn->query("FLUSH PRIVILEGES");
+    }
+
+    private function sanitizePrivilege(string $privilege): string {
+        $candidate = strtoupper(trim($privilege));
+        if (!in_array($candidate, self::ALLOWED_PRIVILEGES, true)) {
+            throw new \InvalidArgumentException('Invalid privilege: ' . $privilege);
+        }
+        return $candidate;
     }
 
 }

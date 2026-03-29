@@ -22,13 +22,18 @@ if (!Security::checkIPWhitelist($ipWhitelist, $trustedProxies)) {
     http_response_code(403);
     $uri = $_SERVER['REQUEST_URI'] ?? '';
     if (str_contains($uri, '/api/')) {
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Access denied']);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        echo json_encode(['error' => 'Access denied'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     } else {
         header('Content-Type: text/html; charset=utf-8');
         echo '<!DOCTYPE html><html><head><title>Access Denied</title></head><body><h1>403 Forbidden</h1><p>Your IP address is not allowed.</p></body></html>';
     }
     exit;
+}
+if (!headers_sent()) {
+    header('X-Request-ID: ' . DATABROWSE_REQUEST_ID);
 }
 
 // === Auth Routes (CSRF exempt) ===
@@ -119,6 +124,19 @@ $router->post('/api/auth/logout', function (): array {
         $_SESSION = [];
         session_destroy();
     }
+    if (PHP_SAPI !== 'cli' && !headers_sent()) {
+        setcookie('databrowse_csrf', '', [
+            'expires' => time() - 3600,
+            'path' => '/',
+            'secure' => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'httponly' => false,
+            'samesite' => 'Strict',
+        ]);
+    }
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+    session_regenerate_id(true);
     return ['success' => true];
 });
 
@@ -156,6 +174,20 @@ $authMiddleware = function () use ($config): ?array {
             http_response_code(403);
             return ['error' => 'Invalid CSRF token'];
         }
+
+        $hostHeader = (string)($_SERVER['HTTP_HOST'] ?? '');
+        $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
+        $referer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+        if ($hostHeader !== '') {
+            if ($origin !== '' && !isSameOriginUrl($origin, $hostHeader)) {
+                http_response_code(403);
+                return ['error' => 'Invalid request origin'];
+            }
+            if ($origin === '' && $referer !== '' && !isSameOriginUrl($referer, $hostHeader)) {
+                http_response_code(403);
+                return ['error' => 'Invalid request referer'];
+            }
+        }
     }
 
     // Read-only mode: block write operations
@@ -178,21 +210,125 @@ $authMiddleware = function () use ($config): ?array {
 
 // Helper: parse JSON request body — exits with 400 on invalid input
 function getJsonInput(): array {
+    $contentType = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? ''));
+    if ($contentType !== '' && !str_starts_with($contentType, 'application/json')) {
+        http_response_code(415);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'Content-Type must be application/json'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    $security = $GLOBALS['config']['security'] ?? [];
+    $maxBodyBytes = max(1024, (int)($security['max_request_body_bytes'] ?? 1048576));
+    $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($contentLength > $maxBodyBytes) {
+        http_response_code(413);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'Request body too large'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
     $raw = file_get_contents('php://input');
+    if ($raw !== false && strlen($raw) > $maxBodyBytes) {
+        http_response_code(413);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'Request body too large'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
     if ($raw === '' || $raw === false) {
         http_response_code(400);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Request body is empty']);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'Request body is empty'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
     $data = json_decode($raw, true);
     if (!is_array($data)) {
         http_response_code(400);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Invalid JSON in request body']);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'Invalid JSON in request body'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
     return $data;
+}
+
+function isSameOriginUrl(string $url, string $hostHeader): bool {
+    $urlHost = parse_url($url, PHP_URL_HOST);
+    if (!is_string($urlHost) || $urlHost === '') {
+        return false;
+    }
+    $urlPort = parse_url($url, PHP_URL_PORT);
+    $host = strtolower($hostHeader);
+    $hostOnly = strtolower((string)preg_replace('/:\d+$/', '', $host));
+    if ($hostOnly !== strtolower($urlHost)) {
+        return false;
+    }
+
+    $hostPort = null;
+    if (preg_match('/:(\d+)$/', $host, $m) === 1) {
+        $hostPort = (int)$m[1];
+    }
+    if ($urlPort !== null && $hostPort !== null && (int)$urlPort !== $hostPort) {
+        return false;
+    }
+
+    return true;
+}
+
+function enforceApiRateLimit(array $config, string $method, string $uri): ?array {
+    $security = $config['security'] ?? [];
+    $trustedProxies = is_array($security['trusted_proxies'] ?? null)
+        ? $security['trusted_proxies']
+        : [];
+    $ip = Security::getClientIP($trustedProxies);
+
+    $max = max(10, (int)($security['api_rate_limit_max'] ?? 300));
+    $window = max(1, (int)($security['api_rate_limit_window'] ?? 60));
+    if (!Security::checkRateLimit("api:{$ip}", $max, $window)) {
+        http_response_code(429);
+        return ['error' => 'Too many API requests. Please slow down.'];
+    }
+
+    if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+        $writeMax = max(1, (int)($security['api_write_rate_limit_max'] ?? 120));
+        $writeWindow = max(1, (int)($security['api_write_rate_limit_window'] ?? 60));
+        if (!Security::checkRateLimit("api-write:{$ip}", $writeMax, $writeWindow)) {
+            http_response_code(429);
+            return ['error' => 'Too many write requests. Please slow down.'];
+        }
+    }
+
+    // Tighten polling-heavy endpoints less aggressively by including path key.
+    if (str_starts_with($uri, '/api/import/progress/')) {
+        if (!Security::checkRateLimit("api-progress:{$ip}", 600, 60)) {
+            http_response_code(429);
+            return ['error' => 'Too many progress polling requests.'];
+        }
+    }
+
+    return null;
+}
+
+function normalizeSqlForSecurityCheck(string $sql): string {
+    $sql = preg_replace('/\/\*.*?\*\//s', ' ', $sql) ?? $sql;
+    $sql = preg_replace('/--[^\r\n]*/', ' ', $sql) ?? $sql;
+    $sql = preg_replace('/#[^\r\n]*/', ' ', $sql) ?? $sql;
+    $sql = strtoupper($sql);
+    $sql = preg_replace('/\s+/', ' ', $sql) ?? $sql;
+    return trim($sql);
+}
+
+function findBlockedSqlPattern(string $sql, array $blockedPatterns): ?string {
+    $normalizedSql = normalizeSqlForSecurityCheck($sql);
+    foreach ($blockedPatterns as $pattern) {
+        if (!is_string($pattern) || $pattern === '') {
+            continue;
+        }
+        $normalizedPattern = preg_replace('/\s+/', ' ', strtoupper(trim($pattern)));
+        if (is_string($normalizedPattern) && $normalizedPattern !== '' && str_contains($normalizedSql, $normalizedPattern)) {
+            return $pattern;
+        }
+    }
+    return null;
 }
 
 // Helper: require fields from input, return 400 if missing
@@ -521,7 +657,44 @@ $router->put('/api/data/{db}/{table}', function (array $params) use ($authMiddle
     return ['success' => true, 'affected_rows' => $affected];
 });
 
+$router->put('/api/data/{db}/{table}/{pk}', function (array $params) use ($authMiddleware): array {
+    if ($err = ($authMiddleware)()) return $err;
+    $db = Security::sanitizeIdentifier($params['db']);
+    $table = Security::sanitizeIdentifier($params['table']);
+    $input = getJsonInput();
+
+    $conn = getConnection();
+    $dm = new DataManager($conn);
+    if ($err = requireFields($input, ['row', 'where'])) return $err;
+    if (!is_array($input['row']) || !is_array($input['where'])) {
+        http_response_code(400);
+        return ['error' => 'row and where must be objects'];
+    }
+    if ($err = validateIdentifierMap($input['row'], 'row')) return $err;
+    if ($err = validateIdentifierMap($input['where'], 'where')) return $err;
+    $affected = $dm->updateRow($db, $table, $input['row'], $input['where']);
+    return ['success' => true, 'affected_rows' => $affected];
+});
+
 $router->delete('/api/data/{db}/{table}', function (array $params) use ($authMiddleware): array {
+    if ($err = ($authMiddleware)()) return $err;
+    $db = Security::sanitizeIdentifier($params['db']);
+    $table = Security::sanitizeIdentifier($params['table']);
+    $input = getJsonInput();
+
+    $conn = getConnection();
+    $dm = new DataManager($conn);
+    if ($err = requireFields($input, ['where'])) return $err;
+    if (!is_array($input['where'])) {
+        http_response_code(400);
+        return ['error' => 'where must be an object'];
+    }
+    if ($err = validateIdentifierMap($input['where'], 'where')) return $err;
+    $affected = $dm->deleteRow($db, $table, $input['where']);
+    return ['success' => true, 'affected_rows' => $affected];
+});
+
+$router->delete('/api/data/{db}/{table}/{pk}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
@@ -574,9 +747,20 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
     $maxHistorySqlLength = max(1, (int)($config['security']['max_history_sql_length'] ?? 4000));
     $requestedLimit = (int)($input['limit'] ?? 1000);
     $limit = max(1, min($maxQueryLimit, $requestedLimit));
+    $maxStatements = max(1, (int)($config['security']['max_statements_per_query'] ?? 25));
     if (mb_strlen($sql, 'UTF-8') > $maxSqlLength) {
         http_response_code(413);
         return ['error' => 'SQL statement is too long'];
+    }
+    if (!$config['security']['allow_dangerous_sql']) {
+        $blockedPatterns = is_array($config['security']['blocked_sql_patterns'] ?? null)
+            ? $config['security']['blocked_sql_patterns']
+            : [];
+        $blocked = findBlockedSqlPattern($sql, $blockedPatterns);
+        if ($blocked !== null) {
+            http_response_code(403);
+            return ['error' => 'Blocked SQL pattern detected: ' . $blocked];
+        }
     }
 
     $conn = getConnection();
@@ -585,10 +769,10 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
     }
 
     $executor = new QueryExecutor($conn);
+    $queries = $executor->splitQueries($sql);
 
     // Read-only mode: block write queries at the SQL level (not just HTTP method)
     if ($config['security']['read_only_mode']) {
-        $queries = $executor->splitQueries($sql);
         $readOnlyAllowed = [QueryType::SELECT, QueryType::SHOW, QueryType::DESCRIBE, QueryType::EXPLAIN];
         foreach ($queries as $q) {
             $trimmed = trim($q);
@@ -600,6 +784,11 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
                 return ['error' => 'Write queries are disabled in read-only mode'];
             }
         }
+    }
+    $queryCount = count($queries);
+    if ($queryCount > $maxStatements) {
+        http_response_code(400);
+        return ['error' => "Too many SQL statements. Max allowed: {$maxStatements}"];
     }
 
     $result = $executor->execute($sql, $limit);
@@ -632,6 +821,16 @@ $router->post('/api/query/explain', function () use ($authMiddleware): array {
         http_response_code(413);
         return ['error' => 'SQL statement is too long'];
     }
+    if (!(bool)($security['allow_dangerous_sql'] ?? false)) {
+        $blockedPatterns = is_array($security['blocked_sql_patterns'] ?? null)
+            ? $security['blocked_sql_patterns']
+            : [];
+        $blocked = findBlockedSqlPattern($sql, $blockedPatterns);
+        if ($blocked !== null) {
+            http_response_code(403);
+            return ['error' => 'Blocked SQL pattern detected: ' . $blocked];
+        }
+    }
     $database = $input['database'] ?? null;
 
     $conn = getConnection();
@@ -650,7 +849,13 @@ $router->get('/api/query/history', function () use ($authMiddleware): array {
 
 // === Export Routes ===
 $router->post('/api/export/sql', function () use ($authMiddleware): void {
-    if ($err = ($authMiddleware)()) { header('Content-Type: application/json'); echo json_encode($err); return; }
+    if ($err = ($authMiddleware)()) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        echo json_encode($err, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return;
+    }
     $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
 
@@ -674,7 +879,13 @@ $router->post('/api/export/sql', function () use ($authMiddleware): void {
 });
 
 $router->post('/api/export/csv', function () use ($authMiddleware): void {
-    if ($err = ($authMiddleware)()) { header('Content-Type: application/json'); echo json_encode($err); return; }
+    if ($err = ($authMiddleware)()) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        echo json_encode($err, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return;
+    }
     $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
     $table = Security::sanitizeIdentifier($input['table']);
@@ -693,7 +904,13 @@ $router->post('/api/export/csv', function () use ($authMiddleware): void {
 });
 
 $router->post('/api/export/json', function () use ($authMiddleware): void {
-    if ($err = ($authMiddleware)()) { header('Content-Type: application/json'); echo json_encode($err); return; }
+    if ($err = ($authMiddleware)()) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        echo json_encode($err, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        return;
+    }
     $input = getJsonInput();
     $db = Security::sanitizeIdentifier($input['database']);
     $table = Security::sanitizeIdentifier($input['table']);
@@ -727,7 +944,7 @@ $router->post('/api/import/sql', function () use ($authMiddleware, $config): arr
         $file,
         $maxSize,
         ['sql'],
-        ['text/plain', 'application/sql', 'application/x-sql', 'text/x-sql', 'application/octet-stream']
+        ['text/plain', 'application/sql', 'application/x-sql', 'text/x-sql']
     );
     if ($validationError !== null) {
         return $validationError;
@@ -768,7 +985,7 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
         $file,
         $config['import']['max_file_size'],
         ['csv'],
-        ['text/plain', 'text/csv', 'application/csv', 'application/vnd.ms-excel', 'application/octet-stream']
+        ['text/plain', 'text/csv', 'application/csv', 'application/vnd.ms-excel']
     );
     if ($validationError !== null) {
         return $validationError;
@@ -860,6 +1077,64 @@ $router->get('/api/users/{user}/{host}/privileges', function (array $params) use
     $conn = getConnection();
     $userMgr = new UserManager($conn);
     return ['privileges' => $userMgr->getPrivileges($user, $host)];
+});
+
+$router->post('/api/users/{user}/{host}/grant', function (array $params) use ($authMiddleware): array {
+    if ($err = ($authMiddleware)()) return $err;
+    $input = getJsonInput();
+    if ($err = requireFields($input, ['privilege'])) return $err;
+
+    $user = $params['user'];
+    $host = $params['host'];
+    if (strlen($user) > 32 || strlen($host) > 255) {
+        http_response_code(400);
+        return ['error' => 'Invalid user or host length'];
+    }
+
+    $privilege = strtoupper(trim((string)$input['privilege']));
+    $database = (string)($input['database'] ?? '*');
+    $table = (string)($input['table'] ?? '*');
+    $database = $database === '*' ? '*' : Security::sanitizeIdentifier($database);
+    $table = $table === '*' ? '*' : Security::sanitizeIdentifier($table);
+
+    $conn = getConnection();
+    $userMgr = new UserManager($conn);
+    try {
+        $userMgr->grantPrivilege($user, $host, $privilege, $database, $table);
+    } catch (\InvalidArgumentException $e) {
+        http_response_code(400);
+        return ['error' => $e->getMessage()];
+    }
+    return ['success' => true];
+});
+
+$router->post('/api/users/{user}/{host}/revoke', function (array $params) use ($authMiddleware): array {
+    if ($err = ($authMiddleware)()) return $err;
+    $input = getJsonInput();
+    if ($err = requireFields($input, ['privilege'])) return $err;
+
+    $user = $params['user'];
+    $host = $params['host'];
+    if (strlen($user) > 32 || strlen($host) > 255) {
+        http_response_code(400);
+        return ['error' => 'Invalid user or host length'];
+    }
+
+    $privilege = strtoupper(trim((string)$input['privilege']));
+    $database = (string)($input['database'] ?? '*');
+    $table = (string)($input['table'] ?? '*');
+    $database = $database === '*' ? '*' : Security::sanitizeIdentifier($database);
+    $table = $table === '*' ? '*' : Security::sanitizeIdentifier($table);
+
+    $conn = getConnection();
+    $userMgr = new UserManager($conn);
+    try {
+        $userMgr->revokePrivilege($user, $host, $privilege, $database, $table);
+    } catch (\InvalidArgumentException $e) {
+        http_response_code(400);
+        return ['error' => $e->getMessage()];
+    }
+    return ['success' => true];
 });
 
 $router->post('/api/users', function () use ($authMiddleware): array {
@@ -1007,10 +1282,26 @@ if ($uri[0] !== '/') {
 
 // API routes
 if (str_starts_with($uri, '/api/')) {
+    if ($rateError = enforceApiRateLimit($config, $method, $uri)) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        header('Pragma: no-cache');
+        $encodedRate = json_encode($rateError, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        echo $encodedRate !== false ? $encodedRate : '{"error":"Too many requests"}';
+        exit;
+    }
     header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
     $result = $router->dispatch($method, $uri);
     if ($result !== null) {
-        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
+        $encoded = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($encoded === false) {
+            http_response_code(500);
+            echo '{"error":"Failed to encode response"}';
+            exit;
+        }
+        echo $encoded;
     }
     exit;
 }

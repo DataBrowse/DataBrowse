@@ -16,6 +16,7 @@ require_once __DIR__ . '/../src/Security.php';
 require_once __DIR__ . '/../src/Router.php';
 require_once __DIR__ . '/../src/ConnectionManager.php';
 require_once __DIR__ . '/../src/SchemaInspector.php';
+require_once __DIR__ . '/../src/SQLTokenizer.php';
 require_once __DIR__ . '/../src/QueryExecutor.php';
 require_once __DIR__ . '/../src/DataManager.php';
 require_once __DIR__ . '/../src/ExportEngine.php';

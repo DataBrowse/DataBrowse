@@ -25,6 +25,7 @@ $sources = [
     'src/ConnectionManager.php',
     'src/SchemaInspector.php',
     'src/QueryExecutor.php',
+    'src/SQLTokenizer.php',
     'src/DataManager.php',
     'src/ExportEngine.php',
     'src/ImportEngine.php',

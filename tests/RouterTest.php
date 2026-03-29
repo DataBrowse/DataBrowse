@@ -53,4 +53,11 @@ final class RouterTest extends TestCase {
         $result = $router->dispatch('DELETE', '/api/items/42');
         $this->assertSame(['deleted' => '42'], $result);
     }
+
+    public function testPatchRoute(): void {
+        $router = new Router();
+        $router->patch('/api/items/{id}', fn(array $p) => ['patched' => $p['id']]);
+        $result = $router->dispatch('PATCH', '/api/items/42');
+        $this->assertSame(['patched' => '42'], $result);
+    }
 }
