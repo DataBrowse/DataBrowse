@@ -221,6 +221,12 @@ function validateConfig(array $config): array {
         3600,
         60
     );
+    $config['security']['idempotency_ttl'] = clampInt(
+        $config['security']['idempotency_ttl'] ?? null,
+        30,
+        86400,
+        900
+    );
     $config['ui']['rows_per_page'] = clampInt(
         $config['ui']['rows_per_page'] ?? null,
         1,
@@ -303,6 +309,7 @@ function getDefaultConfig(): array {
             'api_rate_limit_window' => 60,
             'api_write_rate_limit_max' => 120,
             'api_write_rate_limit_window' => 60,
+            'idempotency_ttl' => 900,
             'allow_dangerous_sql' => false,
             'blocked_sql_patterns' => ['INTO OUTFILE', 'INTO DUMPFILE', 'LOAD DATA', 'LOAD_FILE('],
             'audit_log_enabled' => true,

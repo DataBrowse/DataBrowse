@@ -15,6 +15,7 @@ final class BootstrapConfigTest extends TestCase {
         $config['security']['max_request_body_bytes'] = 10;
         $config['security']['api_rate_limit_max'] = 1;
         $config['security']['api_rate_limit_window'] = 0;
+        $config['security']['idempotency_ttl'] = 9999999;
         $config['ui']['rows_per_page'] = -5;
         $config['import']['max_file_size'] = 9999999999;
 
@@ -29,6 +30,7 @@ final class BootstrapConfigTest extends TestCase {
         $this->assertSame(1024, $validated['security']['max_request_body_bytes']);
         $this->assertSame(10, $validated['security']['api_rate_limit_max']);
         $this->assertSame(1, $validated['security']['api_rate_limit_window']);
+        $this->assertSame(86400, $validated['security']['idempotency_ttl']);
         $this->assertSame(1, $validated['ui']['rows_per_page']);
         $this->assertSame(536870912, $validated['import']['max_file_size']);
     }

@@ -486,6 +486,207 @@ function writeAuditLog(string $event, array $context = []): void {
     }
 }
 
+function generateOperationId(): string {
+    try {
+        return bin2hex(random_bytes(8));
+    } catch (\Throwable) {
+        return substr(sha1((string)microtime(true)), 0, 16);
+    }
+}
+
+function parseIdempotencyKey(): array {
+    $key = trim((string)($_SERVER['HTTP_X_IDEMPOTENCY_KEY'] ?? ''));
+    if ($key === '') {
+        return ['key' => null];
+    }
+    if (strlen($key) > 128 || preg_match('/^[A-Za-z0-9._:-]+$/', $key) !== 1) {
+        http_response_code(400);
+        return ['key' => null, 'error' => ['error' => 'Invalid idempotency key']];
+    }
+    return ['key' => $key];
+}
+
+function createDeterministicHash(mixed $value): string {
+    $normalize = static function (mixed $input) use (&$normalize): mixed {
+        if (is_array($input)) {
+            $isList = array_keys($input) === range(0, count($input) - 1);
+            if ($isList) {
+                return array_map($normalize, $input);
+            }
+            $out = [];
+            $keys = array_keys($input);
+            sort($keys, SORT_STRING);
+            foreach ($keys as $k) {
+                $out[(string)$k] = $normalize($input[$k]);
+            }
+            return $out;
+        }
+        if (is_bool($input) || is_int($input) || is_float($input) || is_string($input) || $input === null) {
+            return $input;
+        }
+        return (string)$input;
+    };
+
+    $normalized = $normalize($value);
+    $json = json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    return hash('sha256', is_string($json) ? $json : serialize($normalized));
+}
+
+function getIdempotencyFilePath(string $scope, string $key): string {
+    $user = (string)($_SESSION['username'] ?? '');
+    $host = (string)($_SESSION['host'] ?? '');
+    $identity = $scope . '|' . $user . '@' . $host . '|' . $key;
+    $dir = sys_get_temp_dir() . '/databrowse_idempotency';
+    if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new \RuntimeException('Unable to initialize idempotency storage');
+    }
+    return $dir . '/' . hash('sha256', $identity) . '.json';
+}
+
+function beginIdempotentJsonOperation(string $scope, ?string $key, string $bodyHash, int $ttlSeconds): array {
+    if ($key === null) {
+        return ['enabled' => false];
+    }
+
+    try {
+        $path = getIdempotencyFilePath($scope, $key);
+    } catch (\Throwable) {
+        return ['enabled' => false];
+    }
+    $handle = fopen($path, 'c+');
+    if ($handle === false) {
+        return ['enabled' => false];
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return ['enabled' => false];
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $record = [];
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $record = $decoded;
+            }
+        }
+
+        $now = time();
+        $expiresAt = (int)($record['updated_at'] ?? 0) + max(30, $ttlSeconds);
+        $isFresh = $record !== [] && $expiresAt >= $now;
+        if ($isFresh) {
+            $existingHash = (string)($record['body_hash'] ?? '');
+            if ($existingHash !== $bodyHash) {
+                return [
+                    'enabled' => true,
+                    'conflict' => true,
+                    'status' => 409,
+                    'response' => ['error' => 'Idempotency key already used with a different payload'],
+                ];
+            }
+
+            $state = (string)($record['state'] ?? 'in_progress');
+            if ($state === 'done') {
+                $status = (int)($record['status'] ?? 200);
+                $response = $record['response'] ?? null;
+                if (is_array($response)) {
+                    return [
+                        'enabled' => true,
+                        'replay' => true,
+                        'status' => $status,
+                        'response' => $response,
+                    ];
+                }
+            }
+
+            return [
+                'enabled' => true,
+                'conflict' => true,
+                'status' => 409,
+                'response' => ['error' => 'Operation with this idempotency key is already in progress'],
+            ];
+        }
+
+        $next = [
+            'scope' => $scope,
+            'state' => 'in_progress',
+            'body_hash' => $bodyHash,
+            'created_at' => $record['created_at'] ?? $now,
+            'updated_at' => $now,
+        ];
+        $json = json_encode($next, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (!is_string($json)) {
+            return ['enabled' => false];
+        }
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, $json);
+        fflush($handle);
+
+        return [
+            'enabled' => true,
+            'path' => $path,
+            'scope' => $scope,
+            'key' => $key,
+            'body_hash' => $bodyHash,
+        ];
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+function completeIdempotentJsonOperation(array $token, int $status, array $response): void {
+    if (!(bool)($token['enabled'] ?? false)) {
+        return;
+    }
+    $path = $token['path'] ?? null;
+    $bodyHash = $token['body_hash'] ?? null;
+    if (!is_string($path) || $path === '' || !is_string($bodyHash) || $bodyHash === '') {
+        return;
+    }
+
+    $handle = fopen($path, 'c+');
+    if ($handle === false) {
+        return;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return;
+        }
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $record = [];
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $record = $decoded;
+            }
+        }
+        if (($record['body_hash'] ?? '') !== $bodyHash) {
+            return;
+        }
+        $record['state'] = 'done';
+        $record['updated_at'] = time();
+        $record['status'] = max(100, min(599, $status));
+        $record['response'] = $response;
+        $json = json_encode($record, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (!is_string($json)) {
+            return;
+        }
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, $json);
+        fflush($handle);
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
 function getUploadErrorMessage(int $errorCode): string {
     return match ($errorCode) {
         UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Uploaded file exceeds size limits',
@@ -1002,10 +1203,15 @@ $router->get('/api/query/history', function () use ($authMiddleware): array {
 
 // === Export Routes ===
 $router->post('/api/export/sql', function () use ($authMiddleware): void {
+    $operationId = generateOperationId();
+    if (!headers_sent()) {
+        header('X-Operation-ID: ' . $operationId);
+    }
     if ($err = ($authMiddleware)()) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
+        $err['operation_id'] = $operationId;
         echo json_encode($err, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         return;
     }
@@ -1018,6 +1224,7 @@ $router->post('/api/export/sql', function () use ($authMiddleware): void {
     $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $db);
     header('Content-Type: application/sql');
     header("Content-Disposition: attachment; filename=\"{$safeName}_" . date('Y-m-d_His') . ".sql\"");
+    writeAuditLog('export.sql', ['database' => $db, 'operation_id' => $operationId]);
 
     foreach ($exporter->export(
         database: $db,
@@ -1032,10 +1239,15 @@ $router->post('/api/export/sql', function () use ($authMiddleware): void {
 });
 
 $router->post('/api/export/csv', function () use ($authMiddleware): void {
+    $operationId = generateOperationId();
+    if (!headers_sent()) {
+        header('X-Operation-ID: ' . $operationId);
+    }
     if ($err = ($authMiddleware)()) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
+        $err['operation_id'] = $operationId;
         echo json_encode($err, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         return;
     }
@@ -1049,6 +1261,7 @@ $router->post('/api/export/csv', function () use ($authMiddleware): void {
     $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $table);
     header('Content-Type: text/csv; charset=utf-8');
     header("Content-Disposition: attachment; filename=\"{$safeName}_" . date('Y-m-d_His') . ".csv\"");
+    writeAuditLog('export.csv', ['database' => $db, 'table' => $table, 'operation_id' => $operationId]);
 
     foreach ($exporter->export($db, $table) as $chunk) {
         echo $chunk;
@@ -1057,10 +1270,15 @@ $router->post('/api/export/csv', function () use ($authMiddleware): void {
 });
 
 $router->post('/api/export/json', function () use ($authMiddleware): void {
+    $operationId = generateOperationId();
+    if (!headers_sent()) {
+        header('X-Operation-ID: ' . $operationId);
+    }
     if ($err = ($authMiddleware)()) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
         header('Pragma: no-cache');
+        $err['operation_id'] = $operationId;
         echo json_encode($err, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         return;
     }
@@ -1074,6 +1292,7 @@ $router->post('/api/export/json', function () use ($authMiddleware): void {
     $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $table);
     header('Content-Type: application/json');
     header("Content-Disposition: attachment; filename=\"{$safeName}_" . date('Y-m-d_His') . ".json\"");
+    writeAuditLog('export.json', ['database' => $db, 'table' => $table, 'operation_id' => $operationId]);
 
     foreach ($exporter->export($db, $table) as $chunk) {
         echo $chunk;
@@ -1084,10 +1303,14 @@ $router->post('/api/export/json', function () use ($authMiddleware): void {
 // === Import Routes ===
 $router->post('/api/import/sql', function () use ($authMiddleware, $config): array {
     if ($err = ($authMiddleware)()) return $err;
+    $operationId = generateOperationId();
+    if (!headers_sent()) {
+        header('X-Operation-ID: ' . $operationId);
+    }
 
     if (!isset($_FILES['file'])) {
         http_response_code(400);
-        return ['error' => 'No file uploaded'];
+        return ['error' => 'No file uploaded', 'operation_id' => $operationId];
     }
 
     $file = $_FILES['file'];
@@ -1100,43 +1323,118 @@ $router->post('/api/import/sql', function () use ($authMiddleware, $config): arr
         ['text/plain', 'application/sql', 'application/x-sql', 'text/x-sql']
     );
     if ($validationError !== null) {
+        $validationError['operation_id'] = $operationId;
         return $validationError;
     }
     if ($ext !== 'sql' || !in_array($ext, $config['import']['allowed_extensions'], true)) {
         http_response_code(400);
-        return ['error' => 'Invalid file type. Allowed: sql'];
+        return ['error' => 'Invalid file type. Allowed: sql', 'operation_id' => $operationId];
     }
 
     $database = Security::sanitizeIdentifier($_POST['database'] ?? '');
+    $stopOnError = (bool)($config['import']['stop_on_error'] ?? false);
+    $idempotency = parseIdempotencyKey();
+    if (isset($idempotency['error']) && is_array($idempotency['error'])) {
+        $response = $idempotency['error'];
+        $response['operation_id'] = $operationId;
+        return $response;
+    }
+    $idempotencyKey = is_string($idempotency['key'] ?? null) ? $idempotency['key'] : null;
+    $fileHash = hash_file('sha256', (string)$file['tmp_name']);
+    if (!is_string($fileHash) || $fileHash === '') {
+        $fileHash = hash('sha256', (string)($file['name'] ?? '') . '|' . (string)($file['size'] ?? 0));
+    }
+    $bodyHash = createDeterministicHash([
+        'database' => $database,
+        'file_name' => (string)($file['name'] ?? ''),
+        'file_size' => (int)($file['size'] ?? 0),
+        'file_hash' => $fileHash,
+        'stop_on_error' => $stopOnError,
+    ]);
+    $idempotencyToken = beginIdempotentJsonOperation(
+        'import.sql',
+        $idempotencyKey,
+        $bodyHash,
+        (int)($config['security']['idempotency_ttl'] ?? 900)
+    );
+    if (($idempotencyToken['conflict'] ?? false) === true) {
+        http_response_code((int)($idempotencyToken['status'] ?? 409));
+        $response = is_array($idempotencyToken['response'] ?? null)
+            ? $idempotencyToken['response']
+            : ['error' => 'Idempotency conflict'];
+        $response['operation_id'] = $operationId;
+        return $response;
+    }
+    if (($idempotencyToken['replay'] ?? false) === true) {
+        http_response_code((int)($idempotencyToken['status'] ?? 200));
+        if (!headers_sent()) {
+            header('X-Idempotent-Replay: 1');
+        }
+        $response = is_array($idempotencyToken['response'] ?? null)
+            ? $idempotencyToken['response']
+            : ['error' => 'Invalid idempotency replay payload'];
+        if (!isset($response['operation_id'])) {
+            $response['operation_id'] = $operationId;
+        }
+        return $response;
+    }
+
     $progressId = bin2hex(random_bytes(8));
 
-    $conn = getConnection();
-    $importer = new SQLImporter($conn);
-    $stopOnError = (bool)($config['import']['stop_on_error'] ?? false);
-    $result = $importer->import($file['tmp_name'], $database, $progressId, $stopOnError);
-    writeAuditLog('import.sql', [
-        'database' => $database,
-        'filename' => (string)($file['name'] ?? ''),
-        'size' => (int)($file['size'] ?? 0),
-        'executed' => $result->executedStatements,
-        'failed' => $result->failedStatements,
-    ]);
+    try {
+        $conn = getConnection();
+        $importer = new SQLImporter($conn);
+        $result = $importer->import($file['tmp_name'], $database, $progressId, $stopOnError);
+        writeAuditLog('import.sql', [
+            'database' => $database,
+            'filename' => (string)($file['name'] ?? ''),
+            'size' => (int)($file['size'] ?? 0),
+            'executed' => $result->executedStatements,
+            'failed' => $result->failedStatements,
+            'operation_id' => $operationId,
+        ]);
 
-    return [
-        'success' => true,
-        'total_statements' => $result->totalStatements,
-        'executed' => $result->executedStatements,
-        'failed' => $result->failedStatements,
-        'errors' => array_slice($result->errors, 0, 20),
-    ];
+        $response = [
+            'success' => true,
+            'total_statements' => $result->totalStatements,
+            'executed' => $result->executedStatements,
+            'failed' => $result->failedStatements,
+            'errors' => array_slice($result->errors, 0, 20),
+            'progress_id' => $progressId,
+            'operation_id' => $operationId,
+        ];
+        if ($idempotencyKey !== null) {
+            $response['idempotency_key'] = $idempotencyKey;
+        }
+        completeIdempotentJsonOperation($idempotencyToken, http_response_code(), $response);
+        return $response;
+    } catch (\Throwable $e) {
+        writeAuditLog('import.sql_failed', [
+            'database' => $database,
+            'filename' => (string)($file['name'] ?? ''),
+            'operation_id' => $operationId,
+            'error' => $e->getMessage(),
+        ]);
+        http_response_code(500);
+        $response = ['error' => 'SQL import failed', 'operation_id' => $operationId];
+        if ($idempotencyKey !== null) {
+            $response['idempotency_key'] = $idempotencyKey;
+        }
+        completeIdempotentJsonOperation($idempotencyToken, 500, $response);
+        return $response;
+    }
 });
 
 $router->post('/api/import/csv', function () use ($authMiddleware, $config): array {
     if ($err = ($authMiddleware)()) return $err;
+    $operationId = generateOperationId();
+    if (!headers_sent()) {
+        header('X-Operation-ID: ' . $operationId);
+    }
 
     if (!isset($_FILES['file'])) {
         http_response_code(400);
-        return ['error' => 'No file uploaded'];
+        return ['error' => 'No file uploaded', 'operation_id' => $operationId];
     }
 
     $file = $_FILES['file'];
@@ -1148,41 +1446,115 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
         ['text/plain', 'text/csv', 'application/csv', 'application/vnd.ms-excel']
     );
     if ($validationError !== null) {
+        $validationError['operation_id'] = $operationId;
         return $validationError;
     }
     if ($ext !== 'csv' || !in_array($ext, $config['import']['allowed_extensions'], true)) {
         http_response_code(400);
-        return ['error' => 'Invalid file type. Allowed: csv'];
+        return ['error' => 'Invalid file type. Allowed: csv', 'operation_id' => $operationId];
     }
 
     $database = Security::sanitizeIdentifier($_POST['database'] ?? '');
     $table = Security::sanitizeIdentifier($_POST['table'] ?? '');
-
-    $conn = getConnection();
-    $importer = new CSVImporter($conn);
-    $result = $importer->import(
-        filePath: $file['tmp_name'],
-        database: $database,
-        table: $table,
-        delimiter: substr($_POST['delimiter'] ?? ',', 0, 1) ?: ',',
-        hasHeader: ($_POST['has_header'] ?? '1') === '1',
-    );
-    writeAuditLog('import.csv', [
+    $delimiter = substr($_POST['delimiter'] ?? ',', 0, 1) ?: ',';
+    $hasHeader = ($_POST['has_header'] ?? '1') === '1';
+    $idempotency = parseIdempotencyKey();
+    if (isset($idempotency['error']) && is_array($idempotency['error'])) {
+        $response = $idempotency['error'];
+        $response['operation_id'] = $operationId;
+        return $response;
+    }
+    $idempotencyKey = is_string($idempotency['key'] ?? null) ? $idempotency['key'] : null;
+    $fileHash = hash_file('sha256', (string)$file['tmp_name']);
+    if (!is_string($fileHash) || $fileHash === '') {
+        $fileHash = hash('sha256', (string)($file['name'] ?? '') . '|' . (string)($file['size'] ?? 0));
+    }
+    $bodyHash = createDeterministicHash([
         'database' => $database,
         'table' => $table,
-        'filename' => (string)($file['name'] ?? ''),
-        'size' => (int)($file['size'] ?? 0),
-        'imported' => $result->executedStatements,
-        'failed' => $result->failedStatements,
+        'delimiter' => $delimiter,
+        'has_header' => $hasHeader,
+        'file_name' => (string)($file['name'] ?? ''),
+        'file_size' => (int)($file['size'] ?? 0),
+        'file_hash' => $fileHash,
     ]);
+    $idempotencyToken = beginIdempotentJsonOperation(
+        'import.csv',
+        $idempotencyKey,
+        $bodyHash,
+        (int)($config['security']['idempotency_ttl'] ?? 900)
+    );
+    if (($idempotencyToken['conflict'] ?? false) === true) {
+        http_response_code((int)($idempotencyToken['status'] ?? 409));
+        $response = is_array($idempotencyToken['response'] ?? null)
+            ? $idempotencyToken['response']
+            : ['error' => 'Idempotency conflict'];
+        $response['operation_id'] = $operationId;
+        return $response;
+    }
+    if (($idempotencyToken['replay'] ?? false) === true) {
+        http_response_code((int)($idempotencyToken['status'] ?? 200));
+        if (!headers_sent()) {
+            header('X-Idempotent-Replay: 1');
+        }
+        $response = is_array($idempotencyToken['response'] ?? null)
+            ? $idempotencyToken['response']
+            : ['error' => 'Invalid idempotency replay payload'];
+        if (!isset($response['operation_id'])) {
+            $response['operation_id'] = $operationId;
+        }
+        return $response;
+    }
 
-    return [
-        'success' => true,
-        'total_rows' => $result->totalStatements,
-        'imported' => $result->executedStatements,
-        'failed' => $result->failedStatements,
-        'errors' => array_slice($result->errors, 0, 20),
-    ];
+    try {
+        $conn = getConnection();
+        $importer = new CSVImporter($conn);
+        $result = $importer->import(
+            filePath: $file['tmp_name'],
+            database: $database,
+            table: $table,
+            delimiter: $delimiter,
+            hasHeader: $hasHeader,
+        );
+        writeAuditLog('import.csv', [
+            'database' => $database,
+            'table' => $table,
+            'filename' => (string)($file['name'] ?? ''),
+            'size' => (int)($file['size'] ?? 0),
+            'imported' => $result->executedStatements,
+            'failed' => $result->failedStatements,
+            'operation_id' => $operationId,
+        ]);
+
+        $response = [
+            'success' => true,
+            'total_rows' => $result->totalStatements,
+            'imported' => $result->executedStatements,
+            'failed' => $result->failedStatements,
+            'errors' => array_slice($result->errors, 0, 20),
+            'operation_id' => $operationId,
+        ];
+        if ($idempotencyKey !== null) {
+            $response['idempotency_key'] = $idempotencyKey;
+        }
+        completeIdempotentJsonOperation($idempotencyToken, http_response_code(), $response);
+        return $response;
+    } catch (\Throwable $e) {
+        writeAuditLog('import.csv_failed', [
+            'database' => $database,
+            'table' => $table,
+            'filename' => (string)($file['name'] ?? ''),
+            'operation_id' => $operationId,
+            'error' => $e->getMessage(),
+        ]);
+        http_response_code(500);
+        $response = ['error' => 'CSV import failed', 'operation_id' => $operationId];
+        if ($idempotencyKey !== null) {
+            $response['idempotency_key'] = $idempotencyKey;
+        }
+        completeIdempotentJsonOperation($idempotencyToken, 500, $response);
+        return $response;
+    }
 });
 
 $router->get('/api/import/progress/{id}', function (array $params) use ($authMiddleware): array {
