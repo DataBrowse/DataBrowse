@@ -6,7 +6,6 @@ enum HttpMethod: string {
     case POST = 'POST';
     case PUT = 'PUT';
     case DELETE = 'DELETE';
-    case PATCH = 'PATCH';
 }
 
 final class Router {
@@ -26,10 +25,6 @@ final class Router {
 
     public function delete(string $path, callable $handler): self {
         return $this->addRoute(HttpMethod::DELETE, $path, $handler);
-    }
-
-    public function patch(string $path, callable $handler): self {
-        return $this->addRoute(HttpMethod::PATCH, $path, $handler);
     }
 
     private function addRoute(HttpMethod $method, string $path, callable $handler): self {

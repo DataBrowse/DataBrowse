@@ -32,7 +32,7 @@ if (!Security::checkIPWhitelist($ipWhitelist, $trustedProxies)) {
 }
 
 // === Auth Routes (CSRF exempt) ===
-$router->post('/api/auth/login', function (array $params) use ($config): array {
+$router->post('/api/auth/login', function (array $_params) use ($config): array {
     $input = getJsonInput();
     $trustedProxies = is_array($config['security']['trusted_proxies'] ?? null)
         ? $config['security']['trusted_proxies']
@@ -454,7 +454,7 @@ $router->post('/api/data/{db}/{table}', function (array $params) use ($authMiddl
     return ['success' => true, 'insert_id' => $insertId];
 });
 
-$router->put('/api/data/{db}/{table}/{pk}', function (array $params) use ($authMiddleware): array {
+$router->put('/api/data/{db}/{table}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
@@ -467,7 +467,7 @@ $router->put('/api/data/{db}/{table}/{pk}', function (array $params) use ($authM
     return ['success' => true, 'affected_rows' => $affected];
 });
 
-$router->delete('/api/data/{db}/{table}/{pk}', function (array $params) use ($authMiddleware): array {
+$router->delete('/api/data/{db}/{table}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);

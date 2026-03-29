@@ -20,10 +20,4 @@ final class Helpers {
         return floor($seconds / 86400) . 'd ' . floor(($seconds % 86400) / 3600) . 'h';
     }
 
-    public static function jsonResponse(mixed $data, int $code = 200): never {
-        http_response_code($code);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-        exit;
-    }
 }

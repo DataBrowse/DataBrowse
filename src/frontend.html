@@ -1254,7 +1254,7 @@ function dataViewer() {
             this.fields.filter(f => f.isPrimary).forEach(f => { where[f.name] = row[f.name]; });
             try {
                 await Alpine.store('app').api('PUT',
-                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/0',
+                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable),
                     { row: { [field]: this.editValue }, where });
                 row[field] = this.editValue;
                 Alpine.store('toast').success('Row updated');
@@ -1281,7 +1281,7 @@ function dataViewer() {
             }
             try {
                 await Alpine.store('app').api('DELETE',
-                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable) + '/0',
+                    'api/data/' + encodeURIComponent(Alpine.store('app').currentDb) + '/' + encodeURIComponent(Alpine.store('app').currentTable),
                     { where });
                 Alpine.store('toast').success('Row deleted');
                 this.loadData();

@@ -53,8 +53,6 @@ final readonly class QueryResult {
 }
 
 final class QueryExecutor {
-    private array $history = [];
-
     public function __construct(
         private readonly mysqli $conn,
     ) {}
@@ -97,7 +95,7 @@ final class QueryExecutor {
             $result = $this->conn->query($query);
             $elapsed = (hrtime(true) - $startTime) / 1e6; // ms
 
-            $queryResult = match(true) {
+            $queryResult = match (true) {
                 $result instanceof mysqli_result => new QueryResult(
                     success: true,
                     type: $type,
@@ -119,10 +117,19 @@ final class QueryExecutor {
                     sql: $query,
                     message: $this->conn->info ?: "Query OK, {$this->conn->affected_rows} rows affected",
                 ),
-                default => throw new \RuntimeException('Unexpected query result'),
+                default => new QueryResult(
+                    success: false,
+                    type: $type,
+                    rows: [],
+                    fields: [],
+                    rowCount: 0,
+                    affectedRows: 0,
+                    elapsed: round($elapsed, 3),
+                    sql: $query,
+                    error: 'Unexpected query result type from database driver',
+                ),
             };
 
-            $this->history[] = $queryResult;
             return $queryResult;
 
         } catch (\mysqli_sql_exception $e) {
@@ -144,16 +151,6 @@ final class QueryExecutor {
 
     public function explain(string $sql): QueryResult {
         return $this->execute("EXPLAIN " . $sql);
-    }
-
-    public function getHistory(): array {
-        return array_map(fn(QueryResult $r) => [
-            'sql'      => $r->sql,
-            'elapsed'  => $r->elapsed,
-            'success'  => $r->success,
-            'rowCount' => $r->rowCount,
-            'type'     => $r->type->value,
-        ], $this->history);
     }
 
     private function executeMulti(array $queries, int $limit): QueryResult {

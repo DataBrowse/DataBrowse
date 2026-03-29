@@ -198,10 +198,4 @@ final class Security {
         return false;
     }
 
-    private static function isPrivateIP(string $ip): bool {
-        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
-            return false;
-        }
-        return !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
-    }
 }

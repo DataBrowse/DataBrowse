@@ -37,27 +37,4 @@ final class UserManager {
         $stmt->execute();
     }
 
-    public function grantPrivilege(string $user, string $host, string $privilege, string $database, string $table = '*'): void {
-        $priv = Security::sanitizeIdentifier($privilege);
-        $db = $database === '*' ? '*' : '`' . Security::sanitizeIdentifier($database) . '`';
-        $tbl = $table === '*' ? '*' : '`' . Security::sanitizeIdentifier($table) . '`';
-        $this->conn->query(
-            "GRANT {$priv} ON {$db}.{$tbl} TO '"
-            . $this->conn->real_escape_string($user) . "'@'"
-            . $this->conn->real_escape_string($host) . "'"
-        );
-        $this->conn->query("FLUSH PRIVILEGES");
-    }
-
-    public function revokePrivilege(string $user, string $host, string $privilege, string $database, string $table = '*'): void {
-        $priv = Security::sanitizeIdentifier($privilege);
-        $db = $database === '*' ? '*' : '`' . Security::sanitizeIdentifier($database) . '`';
-        $tbl = $table === '*' ? '*' : '`' . Security::sanitizeIdentifier($table) . '`';
-        $this->conn->query(
-            "REVOKE {$priv} ON {$db}.{$tbl} FROM '"
-            . $this->conn->real_escape_string($user) . "'@'"
-            . $this->conn->real_escape_string($host) . "'"
-        );
-        $this->conn->query("FLUSH PRIVILEGES");
-    }
 }

@@ -58,10 +58,4 @@ final class ConnectionManager {
         ];
     }
 
-    public static function closeAll(): void {
-        foreach (self::$connections as $conn) {
-            $conn->close();
-        }
-        self::$connections = [];
-    }
 }
