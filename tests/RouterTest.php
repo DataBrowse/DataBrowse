@@ -60,4 +60,11 @@ final class RouterTest extends TestCase {
         $result = $router->dispatch('PATCH', '/api/items/42');
         $this->assertSame(['patched' => '42'], $result);
     }
+
+    public function testRouteParamsAreUrlDecoded(): void {
+        $router = new Router();
+        $router->get('/api/users/{user}/{host}', fn(array $p) => $p);
+        $result = $router->dispatch('GET', '/api/users/john%2Edoe/localhost%3A3306');
+        $this->assertSame(['user' => 'john.doe', 'host' => 'localhost:3306'], $result);
+    }
 }

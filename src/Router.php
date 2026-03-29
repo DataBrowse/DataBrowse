@@ -54,6 +54,9 @@ final class Router {
             if (!preg_match($route['pattern'], $uri, $matches)) continue;
 
             $params = array_filter($matches, 'is_string', ARRAY_FILTER_USE_KEY);
+            foreach ($params as $key => $value) {
+                $params[$key] = rawurldecode((string)$value);
+            }
             return ($route['handler'])($params);
         }
 

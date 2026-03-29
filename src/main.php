@@ -38,6 +38,11 @@ if (!headers_sent()) {
 
 // === Auth Routes (CSRF exempt) ===
 $router->post('/api/auth/login', function (array $_params) use ($config): array {
+    if ($originErr = validateMutatingRequestOrigin()) {
+        http_response_code(403);
+        return $originErr;
+    }
+
     $input = getJsonInput();
     $trustedProxies = is_array($config['security']['trusted_proxies'] ?? null)
         ? $config['security']['trusted_proxies']
@@ -50,11 +55,28 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
     }
     $host = (string)($input['host'] ?? '127.0.0.1');
     $port = (int)($input['port'] ?? 3306);
+    $username = (string)($input['username'] ?? '');
+    $password = (string)($input['password'] ?? '');
+    $socket = isset($input['socket']) ? (string)$input['socket'] : null;
+
+    if ($username === '' || strlen($username) > 128) {
+        http_response_code(400);
+        return ['error' => 'Invalid username'];
+    }
+    if (strlen($password) > 4096) {
+        http_response_code(400);
+        return ['error' => 'Password is too long'];
+    }
+    if ($socket !== null && strlen($socket) > 512) {
+        http_response_code(400);
+        return ['error' => 'Socket path is too long'];
+    }
 
     // Rate limit check
     $ip = Security::getClientIP($trustedProxies);
+    $loginKey = "login:{$ip}:" . hash('sha256', mb_strtolower($username, 'UTF-8'));
     if (!Security::checkRateLimit(
-        "login:{$ip}",
+        $loginKey,
         $config['security']['max_login_attempts'],
         $config['security']['lockout_duration']
     )) {
@@ -63,7 +85,7 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
     }
 
     // Root login check
-    if (!$config['security']['allow_root_login'] && ($input['username'] ?? '') === 'root') {
+    if (!$config['security']['allow_root_login'] && $username === 'root') {
         http_response_code(403);
         return ['error' => 'Root login is disabled.'];
     }
@@ -82,23 +104,23 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
     try {
         $conn = ConnectionManager::connect(
             host: $host,
-            username: $input['username'] ?? '',
-            password: $input['password'] ?? '',
+            username: $username,
+            password: $password,
             port: $port,
-            socket: $input['socket'] ?? null,
+            socket: $socket,
         );
 
         // Save session (password encrypted at rest)
         session_regenerate_id(true);
         $_SESSION['authenticated'] = true;
         $_SESSION['host'] = $host;
-        $_SESSION['username'] = $input['username'] ?? '';
+        $_SESSION['username'] = $username;
         $_SESSION['port'] = $port;
-        $_SESSION['socket'] = $input['socket'] ?? null;
+        $_SESSION['socket'] = $socket;
         // Encrypt password so it's not plaintext in session files
         $sessKey = getSessionEncryptionKey();
         $iv = random_bytes(12);
-        $encrypted = openssl_encrypt($input['password'] ?? '', 'aes-256-gcm', $sessKey, 0, $iv, $tag);
+        $encrypted = openssl_encrypt($password, 'aes-256-gcm', $sessKey, 0, $iv, $tag);
         if (!is_string($encrypted)) {
             throw new \RuntimeException('Failed to protect session credentials');
         }
@@ -107,6 +129,11 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
         $_SESSION['csrf_token'] = Security::generateCSRFToken();
 
         $serverInfo = ConnectionManager::getServerInfo($conn);
+        writeAuditLog('auth.login_success', [
+            'host' => $host,
+            'port' => $port,
+            'username' => $username,
+        ]);
 
         return [
             'success' => true,
@@ -114,12 +141,31 @@ $router->post('/api/auth/login', function (array $_params) use ($config): array 
             'csrf_token' => $_SESSION['csrf_token'],
         ];
     } catch (\mysqli_sql_exception $e) {
+        writeAuditLog('auth.login_failed', [
+            'host' => $host,
+            'port' => $port,
+            'username' => $username,
+            'error_code' => $e->getCode(),
+        ]);
         http_response_code(401);
         return ['error' => 'Authentication failed. Please check your credentials and try again.'];
     }
 });
 
-$router->post('/api/auth/logout', function (): array {
+$router->post('/api/auth/logout', function () use ($config): array {
+    if ($originErr = validateMutatingRequestOrigin()) {
+        http_response_code(403);
+        return $originErr;
+    }
+    if (
+        !empty($_SESSION['authenticated'])
+        && (bool)($config['security']['csrf_enabled'] ?? true)
+        && !Security::validateCSRFToken((string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''))
+    ) {
+        http_response_code(403);
+        return ['error' => 'Invalid CSRF token'];
+    }
+    $logoutUser = (string)($_SESSION['username'] ?? '');
     if (session_status() === PHP_SESSION_ACTIVE) {
         $_SESSION = [];
         session_destroy();
@@ -137,6 +183,7 @@ $router->post('/api/auth/logout', function (): array {
         session_start();
     }
     session_regenerate_id(true);
+    writeAuditLog('auth.logout', ['username' => $logoutUser]);
     return ['success' => true];
 });
 
@@ -274,6 +321,24 @@ function isSameOriginUrl(string $url, string $hostHeader): bool {
     return true;
 }
 
+function validateMutatingRequestOrigin(): ?array {
+    $hostHeader = (string)($_SERVER['HTTP_HOST'] ?? '');
+    if ($hostHeader === '') {
+        return null;
+    }
+
+    $origin = (string)($_SERVER['HTTP_ORIGIN'] ?? '');
+    $referer = (string)($_SERVER['HTTP_REFERER'] ?? '');
+    if ($origin !== '' && !isSameOriginUrl($origin, $hostHeader)) {
+        return ['error' => 'Invalid request origin'];
+    }
+    if ($origin === '' && $referer !== '' && !isSameOriginUrl($referer, $hostHeader)) {
+        return ['error' => 'Invalid request referer'];
+    }
+
+    return null;
+}
+
 function enforceApiRateLimit(array $config, string $method, string $uri): ?array {
     $security = $config['security'] ?? [];
     $trustedProxies = is_array($security['trusted_proxies'] ?? null)
@@ -367,6 +432,60 @@ function validateIdentifierMap(array $map, string $fieldName, bool $allowEmpty =
     return null;
 }
 
+function validateAccountPart(string $value, string $field, int $maxLen): ?array {
+    if ($value === '' || strlen($value) > $maxLen) {
+        http_response_code(400);
+        return ['error' => "{$field} must be 1-{$maxLen} characters"];
+    }
+    if (preg_match('/[[:cntrl:]]/', $value) === 1) {
+        http_response_code(400);
+        return ['error' => "Invalid {$field} characters"];
+    }
+    if (preg_match('/^[\p{L}\p{N}_.%:@$-]+$/u', $value) !== 1) {
+        http_response_code(400);
+        return ['error' => "Invalid {$field} format"];
+    }
+    return null;
+}
+
+function writeAuditLog(string $event, array $context = []): void {
+    $security = $GLOBALS['config']['security'] ?? [];
+    if (!(bool)($security['audit_log_enabled'] ?? true)) {
+        return;
+    }
+
+    $trustedProxies = is_array($security['trusted_proxies'] ?? null)
+        ? $security['trusted_proxies']
+        : [];
+    $ip = Security::getClientIP($trustedProxies);
+    $username = (string)($_SESSION['username'] ?? '');
+    $scriptDir = dirname((string)($_SERVER['SCRIPT_FILENAME'] ?? __FILE__));
+    $defaultPath = rtrim($scriptDir, '/\\') . DIRECTORY_SEPARATOR . 'databrowse.audit.log';
+    $configuredPath = (string)($security['audit_log_path'] ?? '');
+    $path = $configuredPath !== '' ? $configuredPath : $defaultPath;
+
+    $record = [
+        'ts' => gmdate('c'),
+        'request_id' => defined('DATABROWSE_REQUEST_ID') ? DATABROWSE_REQUEST_ID : null,
+        'event' => $event,
+        'ip' => $ip,
+        'session_user' => $username,
+        'context' => $context,
+    ];
+
+    $json = json_encode($record, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($json)) {
+        return;
+    }
+    $json .= PHP_EOL;
+
+    try {
+        file_put_contents($path, $json, FILE_APPEND | LOCK_EX);
+    } catch (\Throwable) {
+        // Ignore audit logging errors to avoid breaking API functionality.
+    }
+}
+
 function getUploadErrorMessage(int $errorCode): string {
     return match ($errorCode) {
         UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Uploaded file exceeds size limits',
@@ -404,6 +523,10 @@ function validateUploadedFile(
     }
 
     $name = (string)($file['name'] ?? '');
+    if ($name === '' || strlen($name) > 255 || str_contains($name, "\0") || str_contains($name, '/') || str_contains($name, '\\')) {
+        http_response_code(400);
+        return ['error' => 'Invalid file name'];
+    }
     $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
     if ($ext === '' || !in_array($ext, $allowedExtensions, true)) {
         http_response_code(400);
@@ -421,6 +544,12 @@ function validateUploadedFile(
     if ($mime !== '' && !in_array($mime, $allowedMimes, true)) {
         http_response_code(400);
         return ['error' => 'Invalid file MIME type'];
+    }
+
+    $sample = file_get_contents($tmpName, false, null, 0, 4096);
+    if (is_string($sample) && str_contains($sample, "\0")) {
+        http_response_code(400);
+        return ['error' => 'Binary file content is not allowed'];
     }
 
     return null;
@@ -479,6 +608,7 @@ $router->post('/api/databases', function () use ($authMiddleware): array {
 
     $conn = getConnection();
     $conn->query("CREATE DATABASE `{$name}` CHARACTER SET {$charset} COLLATE {$collation}");
+    writeAuditLog('db.create_database', ['database' => $name, 'charset' => $charset, 'collation' => $collation]);
     return ['success' => true, 'database' => $name];
 });
 
@@ -487,6 +617,7 @@ $router->delete('/api/databases/{name}', function (array $params) use ($authMidd
     $name = Security::sanitizeIdentifier($params['name']);
     $conn = getConnection();
     $conn->query("DROP DATABASE `{$name}`");
+    writeAuditLog('db.drop_database', ['database' => $name]);
     return ['success' => true];
 });
 
@@ -576,6 +707,7 @@ $router->post('/api/tables/{db}', function (array $params) use ($authMiddleware)
     }
     $sql = "CREATE TABLE `{$tableName}` (\n  " . implode(",\n  ", $columns) . "\n) ENGINE={$engine} DEFAULT CHARSET={$charset}";
     $conn->query($sql);
+    writeAuditLog('db.create_table', ['database' => $db, 'table' => $tableName, 'engine' => $engine, 'charset' => $charset]);
     return ['success' => true, 'table' => $tableName, 'sql' => $sql];
 });
 
@@ -586,6 +718,7 @@ $router->delete('/api/tables/{db}/{table}', function (array $params) use ($authM
     $conn = getConnection();
     $conn->select_db($db);
     $conn->query("DROP TABLE `{$table}`");
+    writeAuditLog('db.drop_table', ['database' => $db, 'table' => $table]);
     return ['success' => true];
 });
 
@@ -596,6 +729,7 @@ $router->post('/api/tables/{db}/{table}/truncate', function (array $params) use 
     $conn = getConnection();
     $conn->select_db($db);
     $conn->query("TRUNCATE TABLE `{$table}`");
+    writeAuditLog('db.truncate_table', ['database' => $db, 'table' => $table]);
     return ['success' => true];
 });
 
@@ -792,6 +926,17 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
     }
 
     $result = $executor->execute($sql, $limit);
+    $sqlFingerprint = hash('sha256', normalizeSqlForSecurityCheck($sql));
+    writeAuditLog('query.execute', [
+        'database' => $database,
+        'type' => $result->type->value,
+        'success' => $result->success,
+        'row_count' => $result->rowCount,
+        'affected_rows' => $result->affectedRows,
+        'elapsed_ms' => $result->elapsed,
+        'statement_count' => $queryCount,
+        'sql_fingerprint' => $sqlFingerprint,
+    ]);
 
     // Save to session history
     if (!isset($_SESSION['query_history'])) {
@@ -839,7 +984,15 @@ $router->post('/api/query/explain', function () use ($authMiddleware): array {
     }
 
     $executor = new QueryExecutor($conn);
-    return $executor->explain($sql)->toArray();
+    $result = $executor->explain($sql);
+    writeAuditLog('query.explain', [
+        'database' => $database,
+        'success' => $result->success,
+        'row_count' => $result->rowCount,
+        'elapsed_ms' => $result->elapsed,
+        'sql_fingerprint' => hash('sha256', normalizeSqlForSecurityCheck($sql)),
+    ]);
+    return $result->toArray();
 });
 
 $router->get('/api/query/history', function () use ($authMiddleware): array {
@@ -961,6 +1114,13 @@ $router->post('/api/import/sql', function () use ($authMiddleware, $config): arr
     $importer = new SQLImporter($conn);
     $stopOnError = (bool)($config['import']['stop_on_error'] ?? false);
     $result = $importer->import($file['tmp_name'], $database, $progressId, $stopOnError);
+    writeAuditLog('import.sql', [
+        'database' => $database,
+        'filename' => (string)($file['name'] ?? ''),
+        'size' => (int)($file['size'] ?? 0),
+        'executed' => $result->executedStatements,
+        'failed' => $result->failedStatements,
+    ]);
 
     return [
         'success' => true,
@@ -1007,6 +1167,14 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
         delimiter: substr($_POST['delimiter'] ?? ',', 0, 1) ?: ',',
         hasHeader: ($_POST['has_header'] ?? '1') === '1',
     );
+    writeAuditLog('import.csv', [
+        'database' => $database,
+        'table' => $table,
+        'filename' => (string)($file['name'] ?? ''),
+        'size' => (int)($file['size'] ?? 0),
+        'imported' => $result->executedStatements,
+        'failed' => $result->failedStatements,
+    ]);
 
     return [
         'success' => true,
@@ -1020,6 +1188,10 @@ $router->post('/api/import/csv', function () use ($authMiddleware, $config): arr
 $router->get('/api/import/progress/{id}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $id = $params['id'];
+    if (!preg_match('/^[a-f0-9]{16}$/', $id)) {
+        http_response_code(400);
+        return ['error' => 'Invalid progress id'];
+    }
     return $_SESSION['import_progress'][$id] ?? ['error' => 'Progress not found'];
 });
 
@@ -1055,6 +1227,7 @@ $router->post('/api/server/kill/{id}', function (array $params) use ($authMiddle
         return ['error' => 'Invalid process id'];
     }
     $conn->query("KILL {$processId}");
+    writeAuditLog('server.kill_process', ['process_id' => $processId]);
     return ['success' => true];
 });
 
@@ -1070,10 +1243,8 @@ $router->get('/api/users/{user}/{host}/privileges', function (array $params) use
     if ($err = ($authMiddleware)()) return $err;
     $user = $params['user'];
     $host = $params['host'];
-    if (strlen($user) > 32 || strlen($host) > 255) {
-        http_response_code(400);
-        return ['error' => 'Invalid user or host length'];
-    }
+    if ($err = validateAccountPart($user, 'user', 32)) return $err;
+    if ($err = validateAccountPart($host, 'host', 255)) return $err;
     $conn = getConnection();
     $userMgr = new UserManager($conn);
     return ['privileges' => $userMgr->getPrivileges($user, $host)];
@@ -1086,10 +1257,8 @@ $router->post('/api/users/{user}/{host}/grant', function (array $params) use ($a
 
     $user = $params['user'];
     $host = $params['host'];
-    if (strlen($user) > 32 || strlen($host) > 255) {
-        http_response_code(400);
-        return ['error' => 'Invalid user or host length'];
-    }
+    if ($err = validateAccountPart($user, 'user', 32)) return $err;
+    if ($err = validateAccountPart($host, 'host', 255)) return $err;
 
     $privilege = strtoupper(trim((string)$input['privilege']));
     $database = (string)($input['database'] ?? '*');
@@ -1105,6 +1274,13 @@ $router->post('/api/users/{user}/{host}/grant', function (array $params) use ($a
         http_response_code(400);
         return ['error' => $e->getMessage()];
     }
+    writeAuditLog('user.grant_privilege', [
+        'user' => $user,
+        'host' => $host,
+        'privilege' => $privilege,
+        'database' => $database,
+        'table' => $table,
+    ]);
     return ['success' => true];
 });
 
@@ -1115,10 +1291,8 @@ $router->post('/api/users/{user}/{host}/revoke', function (array $params) use ($
 
     $user = $params['user'];
     $host = $params['host'];
-    if (strlen($user) > 32 || strlen($host) > 255) {
-        http_response_code(400);
-        return ['error' => 'Invalid user or host length'];
-    }
+    if ($err = validateAccountPart($user, 'user', 32)) return $err;
+    if ($err = validateAccountPart($host, 'host', 255)) return $err;
 
     $privilege = strtoupper(trim((string)$input['privilege']));
     $database = (string)($input['database'] ?? '*');
@@ -1134,6 +1308,13 @@ $router->post('/api/users/{user}/{host}/revoke', function (array $params) use ($
         http_response_code(400);
         return ['error' => $e->getMessage()];
     }
+    writeAuditLog('user.revoke_privilege', [
+        'user' => $user,
+        'host' => $host,
+        'privilege' => $privilege,
+        'database' => $database,
+        'table' => $table,
+    ]);
     return ['success' => true];
 });
 
@@ -1143,17 +1324,16 @@ $router->post('/api/users', function () use ($authMiddleware): array {
     if ($err = requireFields($input, ['user', 'password'])) return $err;
     $user = (string)$input['user'];
     $host = (string)($input['host'] ?? '%');
-    if ($user === '' || strlen($user) > 32) {
+    if ($err = validateAccountPart($user, 'user', 32)) return $err;
+    if ($err = validateAccountPart($host, 'host', 255)) return $err;
+    if (!is_string($input['password']) || $input['password'] === '' || strlen($input['password']) > 4096) {
         http_response_code(400);
-        return ['error' => 'Username must be 1-32 characters'];
-    }
-    if (strlen($host) > 255) {
-        http_response_code(400);
-        return ['error' => 'Host must be at most 255 characters'];
+        return ['error' => 'Password must be 1-4096 characters'];
     }
     $conn = getConnection();
     $userMgr = new UserManager($conn);
     $userMgr->createUser($user, $host, $input['password']);
+    writeAuditLog('user.create', ['user' => $user, 'host' => $host]);
     return ['success' => true];
 });
 
@@ -1161,13 +1341,12 @@ $router->delete('/api/users/{user}/{host}', function (array $params) use ($authM
     if ($err = ($authMiddleware)()) return $err;
     $user = $params['user'];
     $host = $params['host'];
-    if (strlen($user) > 32 || strlen($host) > 255) {
-        http_response_code(400);
-        return ['error' => 'Invalid user or host length'];
-    }
+    if ($err = validateAccountPart($user, 'user', 32)) return $err;
+    if ($err = validateAccountPart($host, 'host', 255)) return $err;
     $conn = getConnection();
     $userMgr = new UserManager($conn);
     $userMgr->dropUser($user, $host);
+    writeAuditLog('user.drop', ['user' => $user, 'host' => $host]);
     return ['success' => true];
 });
 

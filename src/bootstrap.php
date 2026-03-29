@@ -252,6 +252,7 @@ function validateConfig(array $config): array {
     $config['security']['csrf_enabled'] = (bool)($config['security']['csrf_enabled'] ?? true);
     $config['security']['csp_enabled'] = (bool)($config['security']['csp_enabled'] ?? true);
     $config['security']['allow_dangerous_sql'] = (bool)($config['security']['allow_dangerous_sql'] ?? false);
+    $config['security']['audit_log_enabled'] = (bool)($config['security']['audit_log_enabled'] ?? true);
     $config['ui']['show_sql_editor'] = (bool)($config['ui']['show_sql_editor'] ?? true);
     $config['ui']['confirm_destructive'] = (bool)($config['ui']['confirm_destructive'] ?? true);
     $config['export']['include_drop_table'] = (bool)($config['export']['include_drop_table'] ?? true);
@@ -274,6 +275,9 @@ function validateConfig(array $config): array {
 
     $config['security']['session_secret'] = is_string($config['security']['session_secret'] ?? null)
         ? $config['security']['session_secret']
+        : '';
+    $config['security']['audit_log_path'] = is_string($config['security']['audit_log_path'] ?? null)
+        ? trim($config['security']['audit_log_path'])
         : '';
 
     return $config;
@@ -301,6 +305,8 @@ function getDefaultConfig(): array {
             'api_write_rate_limit_window' => 60,
             'allow_dangerous_sql' => false,
             'blocked_sql_patterns' => ['INTO OUTFILE', 'INTO DUMPFILE', 'LOAD DATA', 'LOAD_FILE('],
+            'audit_log_enabled' => true,
+            'audit_log_path' => '',
             'force_https' => false,
             'allow_root_login' => true,
             'read_only_mode' => false,

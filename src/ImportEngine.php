@@ -10,6 +10,146 @@ final readonly class ImportResult {
     ) {}
 }
 
+final class SQLImportParser {
+    private string $delimiter = ';';
+    private string $buffer = '';
+    private bool $firstLine = true;
+    private bool $inSingleQuote = false;
+    private bool $inDoubleQuote = false;
+    private bool $inBacktick = false;
+    private bool $inBlockComment = false;
+
+    /**
+     * @return list<string>
+     */
+    public function feedLine(string $line): array {
+        if ($this->firstLine && str_starts_with($line, "\xEF\xBB\xBF")) {
+            $line = substr($line, 3);
+        }
+        $this->firstLine = false;
+
+        if (
+            !$this->inSingleQuote
+            && !$this->inDoubleQuote
+            && !$this->inBacktick
+            && !$this->inBlockComment
+            && trim($this->buffer) === ''
+            && preg_match('/^\s*DELIMITER\s+(\S+)\s*$/i', $line, $m) === 1
+        ) {
+            $candidate = (string)($m[1] ?? '');
+            if ($candidate !== '') {
+                $this->delimiter = $candidate;
+            }
+            return [];
+        }
+
+        $statements = [];
+        $lineComment = false;
+        $lineLen = strlen($line);
+        $delimiterLen = strlen($this->delimiter);
+        $escapeSingle = false;
+        $escapeDouble = false;
+
+        for ($i = 0; $i < $lineLen; $i++) {
+            $ch = $line[$i];
+            $next = $i + 1 < $lineLen ? $line[$i + 1] : '';
+
+            if ($lineComment) {
+                continue;
+            }
+
+            if ($this->inBlockComment) {
+                if ($ch === '*' && $next === '/') {
+                    $this->inBlockComment = false;
+                    $i++;
+                }
+                continue;
+            }
+
+            if ($this->inSingleQuote) {
+                $this->buffer .= $ch;
+                if ($escapeSingle) {
+                    $escapeSingle = false;
+                } elseif ($ch === '\\') {
+                    $escapeSingle = true;
+                } elseif ($ch === "'") {
+                    $this->inSingleQuote = false;
+                }
+                continue;
+            }
+
+            if ($this->inDoubleQuote) {
+                $this->buffer .= $ch;
+                if ($escapeDouble) {
+                    $escapeDouble = false;
+                } elseif ($ch === '\\') {
+                    $escapeDouble = true;
+                } elseif ($ch === '"') {
+                    $this->inDoubleQuote = false;
+                }
+                continue;
+            }
+
+            if ($this->inBacktick) {
+                $this->buffer .= $ch;
+                if ($ch === '`') {
+                    $this->inBacktick = false;
+                }
+                continue;
+            }
+
+            // Neutral state
+            if ($ch === '#' || ($ch === '-' && $next === '-' && ($i + 2 >= $lineLen || ctype_space($line[$i + 2])))) {
+                $lineComment = true;
+                continue;
+            }
+            if ($ch === '/' && $next === '*') {
+                $this->inBlockComment = true;
+                $i++;
+                continue;
+            }
+            if ($ch === "'") {
+                $this->inSingleQuote = true;
+                $escapeSingle = false;
+                $this->buffer .= $ch;
+                continue;
+            }
+            if ($ch === '"') {
+                $this->inDoubleQuote = true;
+                $escapeDouble = false;
+                $this->buffer .= $ch;
+                continue;
+            }
+            if ($ch === '`') {
+                $this->inBacktick = true;
+                $this->buffer .= $ch;
+                continue;
+            }
+
+            $this->buffer .= $ch;
+            if (
+                $delimiterLen > 0
+                && strlen($this->buffer) >= $delimiterLen
+                && substr($this->buffer, -$delimiterLen) === $this->delimiter
+            ) {
+                $stmt = trim(substr($this->buffer, 0, -$delimiterLen));
+                $this->buffer = '';
+                if ($stmt !== '') {
+                    $statements[] = $stmt;
+                }
+            }
+        }
+
+        return $statements;
+    }
+
+    public function flushRemainder(): ?string {
+        $stmt = trim($this->buffer);
+        $this->buffer = '';
+        return $stmt !== '' ? $stmt : null;
+    }
+}
+
 final class SQLImporter {
     private int $totalStatements = 0;
     private int $executedStatements = 0;
@@ -40,54 +180,41 @@ final class SQLImporter {
 
         $fileSize = filesize($filePath) ?: 0;
         $bytesRead = 0;
-        $currentStatement = '';
+        $parser = new SQLImportParser();
 
         try {
             while (($line = fgets($handle)) !== false) {
                 $bytesRead += strlen($line);
-                $trimmed = trim($line);
-
-                // Skip comments and blank lines
-                if ($trimmed === '' || str_starts_with($trimmed, '--') || str_starts_with($trimmed, '#')) {
-                    continue;
-                }
-
-                $currentStatement .= $line;
-
-                // Statement complete?
-                if (str_ends_with($trimmed, ';')) {
-                    $this->totalStatements++;
-                    $stmt = trim($currentStatement);
-                    $currentStatement = '';
-
-                    try {
-                        $this->conn->query($stmt);
-                        $this->executedStatements++;
-                    } catch (\mysqli_sql_exception $e) {
-                        $this->failedStatements++;
-                        if (count($this->errors) < 20) {
-                            $this->errors[] = [
-                                'statement' => mb_substr($stmt, 0, 200),
-                                'error'     => $e->getMessage(),
-                                'code'      => $e->getCode(),
-                            ];
-                        }
-                        if ($stopOnError) {
-                            $this->conn->rollback();
-                            fclose($handle);
-                            return new ImportResult(
-                                totalStatements: $this->totalStatements,
-                                executedStatements: $this->executedStatements,
-                                failedStatements: $this->failedStatements,
-                                errors: $this->errors,
-                            );
-                        }
+                $statements = $parser->feedLine($line);
+                foreach ($statements as $stmt) {
+                    if (!$this->executeStatement($stmt, $stopOnError)) {
+                        $this->conn->rollback();
+                        fclose($handle);
+                        return new ImportResult(
+                            totalStatements: $this->totalStatements,
+                            executedStatements: $this->executedStatements,
+                            failedStatements: $this->failedStatements,
+                            errors: $this->errors,
+                        );
                     }
 
-                    // Update progress every 100 statements
                     if ($this->totalStatements % 100 === 0) {
                         $this->updateProgress($progressId, $bytesRead, $fileSize);
                     }
+                }
+            }
+
+            $tail = $parser->flushRemainder();
+            if ($tail !== null) {
+                if (!$this->executeStatement($tail, $stopOnError)) {
+                    $this->conn->rollback();
+                    fclose($handle);
+                    return new ImportResult(
+                        totalStatements: $this->totalStatements,
+                        executedStatements: $this->executedStatements,
+                        failedStatements: $this->failedStatements,
+                        errors: $this->errors,
+                    );
                 }
             }
 
@@ -107,6 +234,25 @@ final class SQLImporter {
             failedStatements: $this->failedStatements,
             errors: $this->errors,
         );
+    }
+
+    private function executeStatement(string $stmt, bool $stopOnError): bool {
+        $this->totalStatements++;
+        try {
+            $this->conn->query($stmt);
+            $this->executedStatements++;
+            return true;
+        } catch (\mysqli_sql_exception $e) {
+            $this->failedStatements++;
+            if (count($this->errors) < 20) {
+                $this->errors[] = [
+                    'statement' => mb_substr($stmt, 0, 200),
+                    'error'     => $e->getMessage(),
+                    'code'      => $e->getCode(),
+                ];
+            }
+            return !$stopOnError;
+        }
     }
 
     private function updateProgress(string $id, int $bytesRead, int $totalBytes): void {

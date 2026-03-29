@@ -42,6 +42,8 @@ final class BootstrapConfigTest extends TestCase {
         $config['security']['force_https'] = 1;
         $config['security']['read_only_mode'] = 0;
         $config['security']['allow_dangerous_sql'] = '1';
+        $config['security']['audit_log_enabled'] = 0;
+        $config['security']['audit_log_path'] = '  /tmp/audit.log  ';
 
         $validated = validateConfig($config);
 
@@ -52,5 +54,7 @@ final class BootstrapConfigTest extends TestCase {
         $this->assertTrue($validated['security']['force_https']);
         $this->assertFalse($validated['security']['read_only_mode']);
         $this->assertTrue($validated['security']['allow_dangerous_sql']);
+        $this->assertFalse($validated['security']['audit_log_enabled']);
+        $this->assertSame('/tmp/audit.log', $validated['security']['audit_log_path']);
     }
 }
