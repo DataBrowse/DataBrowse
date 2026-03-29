@@ -1797,29 +1797,42 @@ $router->post('/api/schema/compare', function () use ($authMiddleware): array {
 });
 
 // === Dispatch ===
-$uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-// Determine the base path by finding where the script sits
-// Works with: Apache/Nginx rewrite, subdirectory installs, PHP built-in server
-$scriptName = $_SERVER['SCRIPT_FILENAME'] ?? $_SERVER['SCRIPT_NAME'] ?? '';
-$scriptBasename = basename($scriptName);
+// Route resolution — supports three access patterns:
+// 1. Query-string: databrowse.php?_route=/api/auth/status (most compatible, no server config)
+// 2. PATH_INFO:    databrowse.php/api/auth/status (requires AcceptPathInfo On)
+// 3. URL rewrite:  /api/auth/status (requires .htaccess or nginx config)
+$uri = '';
 
-// If URI contains the script filename (e.g., /subdir/databrowse.php/api/...), strip it
-if ($scriptBasename && str_contains($scriptBasename, '.php')) {
-    $pos = strpos($uri, $scriptBasename);
-    if ($pos !== false) {
-        $uri = substr($uri, $pos + strlen($scriptBasename));
+// Priority 1: explicit query-string route (works everywhere)
+if (isset($_GET['_route']) && is_string($_GET['_route']) && $_GET['_route'] !== '') {
+    $uri = $_GET['_route'];
+} elseif (!empty($_SERVER['PATH_INFO'])) {
+    // Priority 2: PATH_INFO (set by web server when AcceptPathInfo is on)
+    $uri = $_SERVER['PATH_INFO'];
+} else {
+    // Priority 3: parse from REQUEST_URI
+    $uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+
+    $scriptName = $_SERVER['SCRIPT_FILENAME'] ?? $_SERVER['SCRIPT_NAME'] ?? '';
+    $scriptBasename = basename($scriptName);
+
+    // If URI contains the script filename (e.g., /subdir/databrowse.php/api/...), strip it
+    if ($scriptBasename && str_contains($scriptBasename, '.php')) {
+        $pos = strpos($uri, $scriptBasename);
+        if ($pos !== false) {
+            $uri = substr($uri, $pos + strlen($scriptBasename));
+        }
     }
-}
 
-// For subdirectory installs without script name in URL (rewrite rules)
-// Strip the directory prefix if SCRIPT_NAME tells us the base
-$sn = $_SERVER['SCRIPT_NAME'] ?? '';
-if (str_contains($sn, '.php')) {
-    $basePath = dirname($sn);
-    if ($basePath !== '/' && $basePath !== '\\' && str_starts_with($uri, $basePath)) {
-        $uri = substr($uri, strlen($basePath));
+    // For subdirectory installs without script name in URL (rewrite rules)
+    $sn = $_SERVER['SCRIPT_NAME'] ?? '';
+    if (str_contains($sn, '.php')) {
+        $basePath = dirname($sn);
+        if ($basePath !== '/' && $basePath !== '\\' && str_starts_with($uri, $basePath)) {
+            $uri = substr($uri, strlen($basePath));
+        }
     }
 }
 
@@ -1872,5 +1885,5 @@ if (str_contains($scriptName, '.php')) {
 
 $html = str_replace('{{CSP_NONCE}}', $nonce, FRONTEND_HTML);
 $html = str_replace('{{VERSION}}', DATABROWSE_VERSION, $html);
-$html = str_replace('{{BASE_URL}}', htmlspecialchars($baseUrl, ENT_QUOTES, 'UTF-8'), $html);
+$html = str_replace('{{SCRIPT_NAME}}', htmlspecialchars($scriptName, ENT_QUOTES, 'UTF-8'), $html);
 echo $html;
