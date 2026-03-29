@@ -875,14 +875,41 @@ $router->get('/api/tables/{db}/{table}/structure', function (array $params) use 
     $table = Security::sanitizeIdentifier($params['table']);
     try {
         $inspector = new SchemaInspector(getConnection());
+        $columns = $inspector->getColumns($db, $table);
+        $indexes = $inspector->getIndexes($db, $table);
+
+        $foreignKeys = [];
+        try {
+            $foreignKeys = $inspector->getForeignKeys($db, $table);
+        } catch (\Throwable $e) {
+            // Some hosts restrict INFORMATION_SCHEMA foreign key metadata.
+            error_log(sprintf('[DataBrowse][%s] Optional metadata failed (%s.%s foreign keys): %s', DATABROWSE_REQUEST_ID, $db, $table, $e->getMessage()));
+        }
+
+        $createStatement = '';
+        try {
+            $createStatement = $inspector->getCreateStatement($db, $table);
+        } catch (\Throwable $e) {
+            // "SHOW CREATE TABLE" may be restricted for low-privilege users.
+            error_log(sprintf('[DataBrowse][%s] Optional metadata failed (%s.%s create statement): %s', DATABROWSE_REQUEST_ID, $db, $table, $e->getMessage()));
+        }
+
+        $status = [];
+        try {
+            $status = $inspector->getTableStatus($db, $table);
+        } catch (\Throwable $e) {
+            // Optional table status info should not fail the structure view.
+            error_log(sprintf('[DataBrowse][%s] Optional metadata failed (%s.%s table status): %s', DATABROWSE_REQUEST_ID, $db, $table, $e->getMessage()));
+        }
+
         return [
-            'columns' => $inspector->getColumns($db, $table),
-            'indexes' => $inspector->getIndexes($db, $table),
-            'foreign_keys' => $inspector->getForeignKeys($db, $table),
-            'create_statement' => $inspector->getCreateStatement($db, $table),
-            'status' => $inspector->getTableStatus($db, $table),
+            'columns' => $columns,
+            'indexes' => $indexes,
+            'foreign_keys' => $foreignKeys,
+            'create_statement' => $createStatement,
+            'status' => $status,
         ];
-    } catch (\mysqli_sql_exception $e) {
+    } catch (\Throwable $e) {
         http_response_code(500);
         return ['error' => 'Failed to load structure: ' . $e->getMessage()];
     }

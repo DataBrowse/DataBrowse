@@ -145,9 +145,31 @@ final class SchemaInspector {
     }
 
     public function getTableStatus(string $database, string $table): array {
-        $this->conn->select_db($database);
-        $stmt = $this->conn->prepare("SHOW TABLE STATUS LIKE ?");
-        $stmt->bind_param('s', $table);
+        $stmt = $this->conn->prepare("
+            SELECT
+                TABLE_NAME as Name,
+                ENGINE as Engine,
+                VERSION as Version,
+                ROW_FORMAT as Row_format,
+                TABLE_ROWS as Rows,
+                AVG_ROW_LENGTH as Avg_row_length,
+                DATA_LENGTH as Data_length,
+                MAX_DATA_LENGTH as Max_data_length,
+                INDEX_LENGTH as Index_length,
+                DATA_FREE as Data_free,
+                AUTO_INCREMENT as Auto_increment,
+                CREATE_TIME as Create_time,
+                UPDATE_TIME as Update_time,
+                CHECK_TIME as Check_time,
+                TABLE_COLLATION as Collation,
+                CHECKSUM as Checksum,
+                CREATE_OPTIONS as Create_options,
+                TABLE_COMMENT as Comment
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+            LIMIT 1
+        ");
+        $stmt->bind_param('ss', $database, $table);
         $stmt->execute();
         return $stmt->get_result()->fetch_assoc() ?: [];
     }
