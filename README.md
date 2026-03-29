@@ -52,7 +52,10 @@ Create `databrowse.config.json` in the same directory:
     "ip_whitelist": ["10.0.0.0/8"],
     "trusted_proxies": ["127.0.0.1"],
     "allowed_db_hosts": ["127.0.0.1", "localhost"],
-    "max_query_limit": 5000
+    "max_query_limit": 5000,
+    "max_sql_length": 200000,
+    "max_history_sql_length": 4000,
+    "session_secret": "replace-with-strong-random-secret"
   },
   "ui": {
     "default_theme": "dark",

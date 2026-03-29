@@ -91,10 +91,12 @@ $router->post('/api/auth/login', function (array $params) use ($config): array {
         $_SESSION['port'] = $port;
         $_SESSION['socket'] = $input['socket'] ?? null;
         // Encrypt password so it's not plaintext in session files
-        $sessKey = random_bytes(32);
-        $_SESSION['_enc_key'] = base64_encode($sessKey);
+        $sessKey = getSessionEncryptionKey();
         $iv = random_bytes(12);
         $encrypted = openssl_encrypt($input['password'] ?? '', 'aes-256-gcm', $sessKey, 0, $iv, $tag);
+        if (!is_string($encrypted)) {
+            throw new \RuntimeException('Failed to protect session credentials');
+        }
         $_SESSION['password'] = base64_encode($iv . $tag . $encrypted);
         $_SESSION['login_time'] = time();
         $_SESSION['csrf_token'] = Security::generateCSRFToken();
@@ -113,7 +115,10 @@ $router->post('/api/auth/login', function (array $params) use ($config): array {
 });
 
 $router->post('/api/auth/logout', function (): array {
-    if (session_status() === PHP_SESSION_ACTIVE) { session_destroy(); }
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $_SESSION = [];
+        session_destroy();
+    }
     return ['success' => true];
 });
 
@@ -262,10 +267,29 @@ function validateUploadedFile(
     return null;
 }
 
+function getSessionEncryptionKey(): string {
+    $security = $GLOBALS['config']['security'] ?? [];
+    $configuredSecret = $security['session_secret'] ?? '';
+    if (is_string($configuredSecret) && $configuredSecret !== '') {
+        return hash('sha256', $configuredSecret, true);
+    }
+
+    $encoded = $_SESSION['_enc_key'] ?? '';
+    $decoded = is_string($encoded) ? base64_decode($encoded, true) : false;
+    if (is_string($decoded) && strlen($decoded) === 32) {
+        return $decoded;
+    }
+
+    $generated = random_bytes(32);
+    $_SESSION['_enc_key'] = base64_encode($generated);
+    return $generated;
+}
+
 // Helper: decrypt session password
 function decryptSessionPassword(): string {
-    $key = base64_decode($_SESSION['_enc_key'] ?? '');
-    $blob = base64_decode($_SESSION['password'] ?? '');
+    $key = getSessionEncryptionKey();
+    $blob = base64_decode((string)($_SESSION['password'] ?? ''), true);
+    if (!is_string($blob)) return '';
     if (strlen($blob) < 28 || strlen($key) < 32) return '';
     $iv = substr($blob, 0, 12);
     $tag = substr($blob, 12, 16);
@@ -473,11 +497,17 @@ $router->post('/api/data/{db}/{table}/batch-delete', function (array $params) us
 $router->post('/api/query/execute', function () use ($authMiddleware, $config): array {
     if ($err = ($authMiddleware)()) return $err;
     $input = getJsonInput();
-    $sql = $input['sql'] ?? '';
+    $sql = (string)($input['sql'] ?? '');
     $database = $input['database'] ?? null;
     $maxQueryLimit = max(1, (int)($config['security']['max_query_limit'] ?? 5000));
+    $maxSqlLength = max(1, (int)($config['security']['max_sql_length'] ?? 200000));
+    $maxHistorySqlLength = max(1, (int)($config['security']['max_history_sql_length'] ?? 4000));
     $requestedLimit = (int)($input['limit'] ?? 1000);
     $limit = max(1, min($maxQueryLimit, $requestedLimit));
+    if (mb_strlen($sql, 'UTF-8') > $maxSqlLength) {
+        http_response_code(413);
+        return ['error' => 'SQL statement is too long'];
+    }
 
     $conn = getConnection();
     if ($database) {
@@ -491,8 +521,9 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
     if (!isset($_SESSION['query_history'])) {
         $_SESSION['query_history'] = [];
     }
+    $historySql = mb_substr($sql, 0, $maxHistorySqlLength, 'UTF-8');
     array_unshift($_SESSION['query_history'], [
-        'sql' => $sql,
+        'sql' => $historySql,
         'database' => $database,
         'success' => $result->success,
         'elapsed' => $result->elapsed,
@@ -507,6 +538,13 @@ $router->post('/api/query/execute', function () use ($authMiddleware, $config): 
 $router->post('/api/query/explain', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $input = getJsonInput();
+    $sql = (string)($input['sql'] ?? '');
+    $security = $GLOBALS['config']['security'] ?? [];
+    $maxSqlLength = max(1, (int)($security['max_sql_length'] ?? 200000));
+    if (mb_strlen($sql, 'UTF-8') > $maxSqlLength) {
+        http_response_code(413);
+        return ['error' => 'SQL statement is too long'];
+    }
     $database = $input['database'] ?? null;
 
     $conn = getConnection();
@@ -515,7 +553,7 @@ $router->post('/api/query/explain', function () use ($authMiddleware): array {
     }
 
     $executor = new QueryExecutor($conn);
-    return $executor->explain($input['sql'] ?? '')->toArray();
+    return $executor->explain($sql)->toArray();
 });
 
 $router->get('/api/query/history', function () use ($authMiddleware): array {

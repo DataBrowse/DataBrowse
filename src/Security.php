@@ -99,11 +99,12 @@ final class Security {
     // Content Security Policy and security headers
     public static function setSecurityHeaders(string $nonce): void {
         header("Content-Security-Policy: default-src 'self'; "
-            . "script-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net https://unpkg.com https://cdn.tailwindcss.com; "
+            . "script-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
             . "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
             . "font-src 'self' https://cdn.jsdelivr.net; "
             . "connect-src 'self'; "
             . "img-src 'self' data:; "
+            . "object-src 'none'; "
             . "frame-ancestors 'none'; "
             . "base-uri 'self'; "
             . "form-action 'self'");
@@ -113,6 +114,9 @@ final class Security {
         header("X-XSS-Protection: 1; mode=block");
         header("Referrer-Policy: strict-origin-when-cross-origin");
         header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
+        if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+            header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
+        }
     }
 
     // SQL identifier validation
