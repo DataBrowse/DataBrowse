@@ -106,9 +106,12 @@ document.addEventListener('alpine:init', () => {
         _scriptName: '{{SCRIPT_NAME}}',
 
         _apiUrl(path) {
-            // path like "api/auth/login" → routable URL
+            // path like "api/data/db/table?page=1&limit=25" → routable URL
             if (this._scriptName.includes('.php')) {
-                return this._scriptName + '?_route=/' + path;
+                const [routePath, queryString] = path.split('?');
+                let url = this._scriptName + '?_route=/' + routePath;
+                if (queryString) url += '&' + queryString;
+                return url;
             }
             return path;
         },

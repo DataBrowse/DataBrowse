@@ -1608,7 +1608,12 @@ $router->get('/api/users', function () use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $conn = getConnection();
     $userMgr = new UserManager($conn);
-    return ['users' => $userMgr->getUsers()];
+    try {
+        return ['users' => $userMgr->getUsers()];
+    } catch (\mysqli_sql_exception $e) {
+        http_response_code(403);
+        return ['error' => 'Insufficient privileges to list users. Access to mysql.user table is required.'];
+    }
 });
 
 $router->get('/api/users/{user}/{host}/privileges', function (array $params) use ($authMiddleware): array {
