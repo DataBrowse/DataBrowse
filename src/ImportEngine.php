@@ -37,7 +37,7 @@ final class SQLImporter {
             throw new \RuntimeException("Cannot open file: {$filePath}");
         }
 
-        $fileSize = filesize($filePath);
+        $fileSize = filesize($filePath) ?: 0;
         $bytesRead = 0;
         $currentStatement = '';
 

@@ -172,10 +172,17 @@ final class DataManager {
 
     public function batchDelete(string $database, string $table, array $rows): int {
         $this->conn->select_db($database);
-        $total = 0;
-        foreach ($rows as $where) {
-            $total += $this->deleteRow($database, $table, $where);
+        $this->conn->begin_transaction();
+        try {
+            $total = 0;
+            foreach ($rows as $where) {
+                $total += $this->deleteRow($database, $table, $where);
+            }
+            $this->conn->commit();
+            return $total;
+        } catch (\Throwable $e) {
+            $this->conn->rollback();
+            throw $e;
         }
-        return $total;
     }
 }

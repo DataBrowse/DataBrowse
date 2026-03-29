@@ -117,7 +117,8 @@ if (!defined('DATABROWSE_TESTING')) {
 
     // HTTPS force
     if ($config['security']['force_https'] && !empty($_SERVER['HTTP_HOST']) && empty($_SERVER['HTTPS'])) {
-        header('Location: https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI'], true, 301);
+        $safeHost = preg_replace('/[^a-zA-Z0-9.\-:]/', '', $_SERVER['HTTP_HOST']);
+        header('Location: https://' . $safeHost . $_SERVER['REQUEST_URI'], true, 301);
         exit;
     }
 

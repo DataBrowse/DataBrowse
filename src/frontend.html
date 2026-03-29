@@ -561,7 +561,7 @@ document.addEventListener('alpine:init', () => {
             </div>
 
             <!-- DATA VIEW -->
-            <div x-show="$store.app.currentView === 'data'" x-data="dataViewer()" x-init="$watch('$store.app.currentTable', () => { if($store.app.currentView === 'data') loadData(); })">
+            <div x-show="$store.app.currentView === 'data'" x-data="dataViewer()" x-init="$watch('$store.app.currentTable', () => { if($store.app.currentView === 'data') { sortCol=null; sortOrder='ASC'; search=''; pagination.page=1; selectedRows=[]; loadData(); } })">
                 <div class="flex items-center justify-between mb-3">
                     <div class="flex items-center gap-3">
                         <h2 class="text-xl font-bold" x-text="$store.app.currentTable"></h2>
@@ -1400,6 +1400,11 @@ function importPanel() {
             if (!this.file) return;
             this.importing = true; this.progress = 0; this.importResult = null;
             const ext = this.file.name.split('.').pop().toLowerCase();
+            if (!['sql', 'csv'].includes(ext)) {
+                Alpine.store('toast').error('Only .sql and .csv files can be imported');
+                this.importing = false;
+                return;
+            }
             const formData = new FormData();
             formData.append('file', this.file);
             formData.append('database', Alpine.store('app').currentDb);
@@ -1407,7 +1412,7 @@ function importPanel() {
                 formData.append('table', prompt('Enter target table name:') || '');
             }
             try {
-                const res = await fetch('api/import/' + (ext === 'csv' ? 'csv' : 'sql'), {
+                const res = await fetch('api/import/' + ext, {
                     method: 'POST',
                     headers: { 'X-CSRF-Token': Alpine.store('app').csrfToken || '' },
                     body: formData

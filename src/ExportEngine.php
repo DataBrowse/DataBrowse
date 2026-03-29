@@ -55,8 +55,12 @@ final class SQLExporter {
 
             if ($includeStructure) {
                 $create = $this->conn->query("SHOW CREATE TABLE `{$escaped}`");
-                $row = $create->fetch_assoc();
-                yield ($row['Create Table'] ?? $row['Create View']) . ";\n\n";
+                $row = $create ? $create->fetch_assoc() : null;
+                if ($row) {
+                    yield ($row['Create Table'] ?? $row['Create View'] ?? "-- unknown object") . ";\n\n";
+                } else {
+                    yield "-- Could not retrieve CREATE statement for `{$escaped}`\n\n";
+                }
             }
 
             if ($includeData) {
@@ -69,10 +73,11 @@ final class SQLExporter {
 
     private function exportTableData(string $table, int $chunkSize): \Generator {
         $escaped = str_replace('`', '``', $table);
-        $count = $this->conn->query("SELECT COUNT(*) as c FROM `{$escaped}`")
-            ->fetch_assoc()['c'];
+        $result = $this->conn->query("SELECT COUNT(*) as c FROM `{$escaped}`");
+        $row = $result ? $result->fetch_assoc() : null;
+        $count = (int)($row['c'] ?? 0);
 
-        if ((int)$count === 0) return;
+        if ($count === 0) return;
 
         $result = $this->conn->query("SELECT * FROM `{$escaped}`", MYSQLI_USE_RESULT);
         $fields = $result->fetch_fields();
@@ -117,7 +122,7 @@ final class SQLExporter {
             MYSQLI_TYPE_TINY, MYSQLI_TYPE_SHORT, MYSQLI_TYPE_LONG,
             MYSQLI_TYPE_FLOAT, MYSQLI_TYPE_DOUBLE, MYSQLI_TYPE_LONGLONG,
             MYSQLI_TYPE_INT24, MYSQLI_TYPE_DECIMAL, MYSQLI_TYPE_NEWDECIMAL,
-        ]);
+        ], true);
     }
 }
 
@@ -137,11 +142,11 @@ final class CSVExporter {
 
         // Data rows (RFC 4180 compliant)
         while ($row = $result->fetch_row()) {
-            $escaped = array_map(
+            $csvValues = array_map(
                 fn($v) => $v === null ? '' : '"' . str_replace('"', '""', (string)$v) . '"',
                 $row
             );
-            yield implode(',', $escaped) . "\n";
+            yield implode(',', $csvValues) . "\n";
         }
         $result->free();
     }

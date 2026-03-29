@@ -93,7 +93,8 @@ final class Security {
         $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? null;
         if ($forwarded && self::isPrivateIP($remoteAddr)) {
             $ips = array_map('trim', explode(',', $forwarded));
-            return $ips[0];
+            $clientIP = filter_var($ips[0], FILTER_VALIDATE_IP);
+            if ($clientIP !== false) return $clientIP;
         }
         return $_SERVER['HTTP_X_REAL_IP']
             ?? $_SERVER['REMOTE_ADDR']
@@ -102,7 +103,9 @@ final class Security {
 
     // Check if IP is within CIDR range
     private static function ipInCIDR(string $ip, string $cidr): bool {
-        [$subnet, $mask] = explode('/', $cidr);
+        $parts = explode('/', $cidr);
+        if (count($parts) !== 2) return false;
+        [$subnet, $mask] = $parts;
         $mask = (int)$mask;
         $ipLong = ip2long($ip);
         $subnetLong = ip2long($subnet);

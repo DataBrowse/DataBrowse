@@ -80,7 +80,7 @@ $router->post('/api/auth/login', function (array $params) use ($config): array {
 });
 
 $router->post('/api/auth/logout', function (): array {
-    session_destroy();
+    if (session_status() === PHP_SESSION_ACTIVE) { session_destroy(); }
     return ['success' => true];
 });
 
@@ -99,7 +99,7 @@ $authMiddleware = function () use ($config): ?array {
     // Session timeout (based on last activity, not login time)
     $lastActivity = $_SESSION['last_activity'] ?? $_SESSION['login_time'] ?? 0;
     if ($lastActivity > 0 && (time() - $lastActivity > $config['security']['session_timeout'])) {
-        session_destroy();
+        if (session_status() === PHP_SESSION_ACTIVE) { session_destroy(); }
         http_response_code(401);
         return ['error' => 'Session expired'];
     }
@@ -112,7 +112,7 @@ $authMiddleware = function () use ($config): ?array {
 
     // CSRF check (POST/PUT/DELETE/PATCH only)
     $method = $_SERVER['REQUEST_METHOD'];
-    if (in_array($method, ['POST', 'PUT', 'DELETE', 'PATCH']) && $config['security']['csrf_enabled']) {
+    if (in_array($method, ['POST', 'PUT', 'DELETE', 'PATCH'], true) && $config['security']['csrf_enabled']) {
         $token = $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if (!Security::validateCSRFToken($token)) {
             http_response_code(403);
@@ -121,13 +121,13 @@ $authMiddleware = function () use ($config): ?array {
     }
 
     // Read-only mode: block write operations
-    if ($config['security']['read_only_mode'] && in_array($method, ['POST', 'PUT', 'DELETE', 'PATCH'])) {
-        $uri = $_SERVER['REQUEST_URI'] ?? '';
-        // Allow login/logout/export/query(read)/explain even in read-only mode
-        $writeExempt = ['/api/auth/', '/api/export/', '/api/query/'];
+    if ($config['security']['read_only_mode'] && in_array($method, ['POST', 'PUT', 'DELETE', 'PATCH'], true)) {
+        // Use parsed path only (no query string) to prevent bypass
+        $checkUri = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+        $writeExempt = ['/api/auth/', '/api/export/'];
         $isExempt = false;
         foreach ($writeExempt as $prefix) {
-            if (str_contains($uri, $prefix)) { $isExempt = true; break; }
+            if (str_contains($checkUri, $prefix)) { $isExempt = true; break; }
         }
         if (!$isExempt) {
             http_response_code(403);
@@ -138,19 +138,36 @@ $authMiddleware = function () use ($config): ?array {
     return null; // Auth passed
 };
 
-// Helper: parse JSON request body with validation
+// Helper: parse JSON request body — exits with 400 on invalid input
 function getJsonInput(): array {
     $raw = file_get_contents('php://input');
     if ($raw === '' || $raw === false) {
         http_response_code(400);
-        return [];
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Request body is empty']);
+        exit;
     }
     $data = json_decode($raw, true);
     if (!is_array($data)) {
         http_response_code(400);
-        return [];
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Invalid JSON in request body']);
+        exit;
     }
     return $data;
+}
+
+// Helper: require fields from input, return 400 if missing
+function requireFields(array $input, array $fields): ?array {
+    $missing = [];
+    foreach ($fields as $f) {
+        if (!isset($input[$f])) $missing[] = $f;
+    }
+    if (!empty($missing)) {
+        http_response_code(400);
+        return ['error' => 'Missing required fields: ' . implode(', ', $missing)];
+    }
+    return null;
 }
 
 // Helper: get authenticated connection
@@ -283,7 +300,7 @@ $router->get('/api/data/{db}/{table}', function (array $params) use ($authMiddle
     $page = max(1, (int)($_GET['page'] ?? 1));
     $limit = min(500, max(1, (int)($_GET['limit'] ?? $config['ui']['rows_per_page'])));
     $sort = isset($_GET['sort']) && $_GET['sort'] !== '' ? $_GET['sort'] : null;
-    if ($sort) { Security::sanitizeIdentifier($sort); } // Validate column name
+    if ($sort) { $sort = Security::sanitizeIdentifier($sort); }
     $order = $_GET['order'] ?? 'ASC';
     $search = $_GET['search'] ?? null;
 
@@ -300,6 +317,11 @@ $router->post('/api/data/{db}/{table}', function (array $params) use ($authMiddl
 
     $conn = getConnection();
     $dm = new DataManager($conn);
+    if ($err = requireFields($input, ['row'])) return $err;
+    if (!is_array($input['row']) || empty($input['row'])) {
+        http_response_code(400);
+        return ['error' => 'Row data cannot be empty'];
+    }
     $insertId = $dm->insertRow($db, $table, $input['row']);
     return ['success' => true, 'insert_id' => $insertId];
 });
@@ -312,6 +334,7 @@ $router->put('/api/data/{db}/{table}/{pk}', function (array $params) use ($authM
 
     $conn = getConnection();
     $dm = new DataManager($conn);
+    if ($err = requireFields($input, ['row', 'where'])) return $err;
     $affected = $dm->updateRow($db, $table, $input['row'], $input['where']);
     return ['success' => true, 'affected_rows' => $affected];
 });
@@ -324,6 +347,7 @@ $router->delete('/api/data/{db}/{table}/{pk}', function (array $params) use ($au
 
     $conn = getConnection();
     $dm = new DataManager($conn);
+    if ($err = requireFields($input, ['where'])) return $err;
     $affected = $dm->deleteRow($db, $table, $input['where']);
     return ['success' => true, 'affected_rows' => $affected];
 });
@@ -336,6 +360,7 @@ $router->post('/api/data/{db}/{table}/batch-delete', function (array $params) us
 
     $conn = getConnection();
     $dm = new DataManager($conn);
+    if ($err = requireFields($input, ['rows'])) return $err;
     $affected = $dm->batchDelete($db, $table, $input['rows']);
     return ['success' => true, 'affected_rows' => $affected];
 });
@@ -469,7 +494,7 @@ $router->post('/api/import/sql', function () use ($authMiddleware, $config): arr
     }
 
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, $config['import']['allowed_extensions'])) {
+    if (!in_array($ext, $config['import']['allowed_extensions'], true)) {
         http_response_code(400);
         return ['error' => 'Invalid file type. Allowed: ' . implode(', ', $config['import']['allowed_extensions'])];
     }
@@ -583,6 +608,7 @@ $router->post('/api/users', function () use ($authMiddleware): array {
     $input = getJsonInput();
     $conn = getConnection();
     $userMgr = new UserManager($conn);
+    if ($err = requireFields($input, ['user', 'password'])) return $err;
     $userMgr->createUser($input['user'], $input['host'] ?? '%', $input['password']);
     return ['success' => true];
 });
@@ -656,7 +682,7 @@ if (str_starts_with($uri, '/api/')) {
     header('Content-Type: application/json; charset=utf-8');
     $result = $router->dispatch($method, $uri);
     if ($result !== null) {
-        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
     }
     exit;
 }

@@ -65,7 +65,7 @@ final class SchemaCompare {
                         ];
                         $nullable = $sourceCol['nullable'] === 'YES' ? '' : ' NOT NULL';
                         $default = $sourceCol['default_value'] !== null
-                            ? " DEFAULT '" . addslashes($sourceCol['default_value']) . "'"
+                            ? " DEFAULT '" . $this->conn->real_escape_string($sourceCol['default_value']) . "'"
                             : '';
                         $alters[] = "ALTER TABLE `{$table}` MODIFY COLUMN `{$name}` {$sourceCol['column_type']}{$nullable}{$default};";
                     }

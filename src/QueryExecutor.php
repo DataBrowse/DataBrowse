@@ -186,8 +186,11 @@ final class QueryExecutor {
     }
 
     private function detectQueryType(string $sql): QueryType {
-        $first = strtoupper(strtok(trim($sql), " \t\n\r"));
-        return QueryType::tryFrom($first) ?? QueryType::OTHER;
+        $trimmed = trim($sql);
+        if ($trimmed === '') return QueryType::OTHER;
+        $token = strtok($trimmed, " \t\n\r");
+        if ($token === false) return QueryType::OTHER;
+        return QueryType::tryFrom(strtoupper($token)) ?? QueryType::OTHER;
     }
 
     private function extractFields(mysqli_result $result): array {
