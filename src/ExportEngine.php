@@ -73,12 +73,6 @@ final class SQLExporter {
 
     private function exportTableData(string $table, int $chunkSize): \Generator {
         $escaped = str_replace('`', '``', $table);
-        $result = $this->conn->query("SELECT COUNT(*) as c FROM `{$escaped}`");
-        $row = $result ? $result->fetch_assoc() : null;
-        $count = (int)($row['c'] ?? 0);
-
-        if ($count === 0) return;
-
         $result = $this->conn->query("SELECT * FROM `{$escaped}`", MYSQLI_USE_RESULT);
         $fields = $result->fetch_fields();
         $fieldNames = array_map(fn($f) => "`" . str_replace('`', '``', $f->name) . "`", $fields);

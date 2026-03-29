@@ -763,9 +763,20 @@ function getSessionEncryptionKey(): string {
         return hash('sha256', $configuredSecret, true);
     }
 
-    // Derive key from server-level constants + session ID so the key cannot
-    // be recovered from the session file alone
-    $material = __FILE__ . '|' . php_uname('n') . '|' . session_id();
+    // Derive key from server-level constants + session ID + install-time entropy.
+    // A persistent random salt is generated once and stored alongside the script,
+    // so the key cannot be reconstructed from publicly guessable values alone.
+    $saltFile = sys_get_temp_dir() . '/databrowse_install_salt.bin';
+    if (file_exists($saltFile)) {
+        $salt = file_get_contents($saltFile);
+    } else {
+        $salt = random_bytes(32);
+        file_put_contents($saltFile, $salt, LOCK_EX);
+        if (function_exists('chmod')) {
+            @chmod($saltFile, 0600);
+        }
+    }
+    $material = $salt . '|' . __FILE__ . '|' . php_uname('n') . '|' . session_id();
     return hash('sha256', $material, true);
 }
 
@@ -992,44 +1003,7 @@ $router->put('/api/data/{db}/{table}', function (array $params) use ($authMiddle
     return ['success' => true, 'affected_rows' => $affected];
 });
 
-$router->put('/api/data/{db}/{table}/{pk}', function (array $params) use ($authMiddleware): array {
-    if ($err = ($authMiddleware)()) return $err;
-    $db = Security::sanitizeIdentifier($params['db']);
-    $table = Security::sanitizeIdentifier($params['table']);
-    $input = getJsonInput();
-
-    $conn = getConnection();
-    $dm = new DataManager($conn);
-    if ($err = requireFields($input, ['row', 'where'])) return $err;
-    if (!is_array($input['row']) || !is_array($input['where'])) {
-        http_response_code(400);
-        return ['error' => 'row and where must be objects'];
-    }
-    if ($err = validateIdentifierMap($input['row'], 'row')) return $err;
-    if ($err = validateIdentifierMap($input['where'], 'where')) return $err;
-    $affected = $dm->updateRow($db, $table, $input['row'], $input['where']);
-    return ['success' => true, 'affected_rows' => $affected];
-});
-
 $router->delete('/api/data/{db}/{table}', function (array $params) use ($authMiddleware): array {
-    if ($err = ($authMiddleware)()) return $err;
-    $db = Security::sanitizeIdentifier($params['db']);
-    $table = Security::sanitizeIdentifier($params['table']);
-    $input = getJsonInput();
-
-    $conn = getConnection();
-    $dm = new DataManager($conn);
-    if ($err = requireFields($input, ['where'])) return $err;
-    if (!is_array($input['where'])) {
-        http_response_code(400);
-        return ['error' => 'where must be an object'];
-    }
-    if ($err = validateIdentifierMap($input['where'], 'where')) return $err;
-    $affected = $dm->deleteRow($db, $table, $input['where']);
-    return ['success' => true, 'affected_rows' => $affected];
-});
-
-$router->delete('/api/data/{db}/{table}/{pk}', function (array $params) use ($authMiddleware): array {
     if ($err = ($authMiddleware)()) return $err;
     $db = Security::sanitizeIdentifier($params['db']);
     $table = Security::sanitizeIdentifier($params['table']);
@@ -1564,7 +1538,8 @@ $router->get('/api/import/progress/{id}', function (array $params) use ($authMid
         http_response_code(400);
         return ['error' => 'Invalid progress id'];
     }
-    return $_SESSION['import_progress'][$id] ?? ['error' => 'Progress not found'];
+    $progress = SQLImporter::readProgress($id);
+    return $progress ?? ['error' => 'Progress not found'];
 });
 
 // === Server Routes ===

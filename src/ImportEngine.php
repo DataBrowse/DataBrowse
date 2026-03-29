@@ -256,7 +256,12 @@ final class SQLImporter {
     }
 
     private function updateProgress(string $id, int $bytesRead, int $totalBytes): void {
-        $_SESSION['import_progress'][$id] = [
+        $dir = sys_get_temp_dir() . '/databrowse_import_progress';
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+            return;
+        }
+        $file = $dir . '/' . preg_replace('/[^a-zA-Z0-9_\-]/', '', $id) . '.json';
+        $data = json_encode([
             'bytes_read'    => $bytesRead,
             'total_bytes'   => $totalBytes,
             'percentage'    => $totalBytes > 0 ? round(($bytesRead / $totalBytes) * 100, 1) : 0,
@@ -264,7 +269,30 @@ final class SQLImporter {
             'executed'      => $this->executedStatements,
             'failed'        => $this->failedStatements,
             'updated_at'    => time(),
-        ];
+        ], JSON_THROW_ON_ERROR);
+        file_put_contents($file, $data, LOCK_EX);
+    }
+
+    public static function readProgress(string $id): ?array {
+        $dir = sys_get_temp_dir() . '/databrowse_import_progress';
+        $file = $dir . '/' . preg_replace('/[^a-zA-Z0-9_\-]/', '', $id) . '.json';
+        if (!file_exists($file)) {
+            return null;
+        }
+        $raw = file_get_contents($file);
+        if (!is_string($raw) || $raw === '') {
+            return null;
+        }
+        $data = json_decode($raw, true);
+        return is_array($data) ? $data : null;
+    }
+
+    public static function cleanupProgress(string $id): void {
+        $dir = sys_get_temp_dir() . '/databrowse_import_progress';
+        $file = $dir . '/' . preg_replace('/[^a-zA-Z0-9_\-]/', '', $id) . '.json';
+        if (file_exists($file)) {
+            @unlink($file);
+        }
     }
 }
 

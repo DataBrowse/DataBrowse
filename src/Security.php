@@ -130,7 +130,7 @@ final class Security {
     // Content Security Policy and security headers
     public static function setSecurityHeaders(string $nonce): void {
         header("Content-Security-Policy: default-src 'self'; "
-            . "script-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
+            . "script-src 'self' 'nonce-{$nonce}' https://cdn.jsdelivr.net/npm/alpinejs@3.15.9/ https://cdn.jsdelivr.net/npm/@alpinejs/ https://cdn.tailwindcss.com; "
             . "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
             . "font-src 'self' https://cdn.jsdelivr.net; "
             . "connect-src 'self'; "
@@ -188,31 +188,44 @@ final class Security {
         return $remoteAddr;
     }
 
-    // Check if IP is within CIDR range
+    // Check if IP is within CIDR range (supports IPv4 and IPv6)
     private static function ipInCIDR(string $ip, string $cidr): bool {
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-            return false;
-        }
-
         $parts = explode('/', $cidr);
         if (count($parts) !== 2) return false;
-        [$subnet, $mask] = $parts;
-        if (filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-            return false;
-        }
-        $mask = (int)$mask;
-        if ($mask < 0 || $mask > 32) {
-            return false;
+        [$subnet, $maskStr] = $parts;
+        $mask = (int)$maskStr;
+
+        // IPv4
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            && filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            if ($mask < 0 || $mask > 32) return false;
+            $ipLong = ip2long($ip);
+            $subnetLong = ip2long($subnet);
+            if ($ipLong === false || $subnetLong === false) return false;
+            $maskLong = $mask === 0 ? 0 : ~((1 << (32 - $mask)) - 1);
+            return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
         }
 
-        $ipLong = ip2long($ip);
-        $subnetLong = ip2long($subnet);
-        if ($ipLong === false || $subnetLong === false) {
-            return false;
+        // IPv6
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false
+            && filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+            if ($mask < 0 || $mask > 128) return false;
+            $ipBin = inet_pton($ip);
+            $subnetBin = inet_pton($subnet);
+            if ($ipBin === false || $subnetBin === false) return false;
+
+            // Build bitmask for IPv6 (128 bits = 16 bytes)
+            $maskBin = str_repeat("\xff", intdiv($mask, 8));
+            $remainder = $mask % 8;
+            if ($remainder > 0) {
+                $maskBin .= chr(0xff << (8 - $remainder) & 0xff);
+            }
+            $maskBin = str_pad($maskBin, 16, "\x00");
+
+            return ($ipBin & $maskBin) === ($subnetBin & $maskBin);
         }
 
-        $maskLong = $mask === 0 ? 0 : ~((1 << (32 - $mask)) - 1);
-        return ($ipLong & $maskLong) === ($subnetLong & $maskLong);
+        return false;
     }
 
     private static function isTrustedProxy(string $remoteAddr, array $trustedProxies): bool {

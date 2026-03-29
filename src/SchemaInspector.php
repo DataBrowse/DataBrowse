@@ -7,22 +7,39 @@ final class SchemaInspector {
     ) {}
 
     public function getDatabases(): array {
-        $result = $this->conn->query("
+        // Two-step approach: fast SCHEMATA query + aggregated table stats.
+        // This avoids a slow GROUP BY on INFORMATION_SCHEMA.TABLES which
+        // triggers full table scans on servers with many databases/tables.
+        $schemas = $this->conn->query("
             SELECT
-                s.SCHEMA_NAME as name,
-                s.DEFAULT_CHARACTER_SET_NAME as charset,
-                s.DEFAULT_COLLATION_NAME as collation,
-                COUNT(t.TABLE_NAME) as table_count,
-                COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) as total_size
-            FROM INFORMATION_SCHEMA.SCHEMATA s
-            LEFT JOIN INFORMATION_SCHEMA.TABLES t
-                ON s.SCHEMA_NAME = t.TABLE_SCHEMA
-            GROUP BY s.SCHEMA_NAME, s.DEFAULT_CHARACTER_SET_NAME,
-                     s.DEFAULT_COLLATION_NAME
-            ORDER BY s.SCHEMA_NAME
-        ");
+                SCHEMA_NAME as name,
+                DEFAULT_CHARACTER_SET_NAME as charset,
+                DEFAULT_COLLATION_NAME as collation
+            FROM INFORMATION_SCHEMA.SCHEMATA
+            ORDER BY SCHEMA_NAME
+        ")->fetch_all(MYSQLI_ASSOC);
 
-        return $result->fetch_all(MYSQLI_ASSOC);
+        $stats = $this->conn->query("
+            SELECT
+                TABLE_SCHEMA as name,
+                COUNT(*) as table_count,
+                COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) as total_size
+            FROM INFORMATION_SCHEMA.TABLES
+            GROUP BY TABLE_SCHEMA
+        ")->fetch_all(MYSQLI_ASSOC);
+
+        $statsMap = [];
+        foreach ($stats as $s) {
+            $statsMap[$s['name']] = $s;
+        }
+
+        foreach ($schemas as &$schema) {
+            $matched = $statsMap[$schema['name']] ?? null;
+            $schema['table_count'] = $matched ? (int)$matched['table_count'] : 0;
+            $schema['total_size'] = $matched ? (int)$matched['total_size'] : 0;
+        }
+
+        return $schemas;
     }
 
     public function getTables(string $database): array {

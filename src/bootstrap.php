@@ -253,7 +253,7 @@ function validateConfig(array $config): array {
     );
 
     $config['security']['force_https'] = (bool)($config['security']['force_https'] ?? false);
-    $config['security']['allow_root_login'] = (bool)($config['security']['allow_root_login'] ?? true);
+    $config['security']['allow_root_login'] = (bool)($config['security']['allow_root_login'] ?? false);
     $config['security']['read_only_mode'] = (bool)($config['security']['read_only_mode'] ?? false);
     $config['security']['csrf_enabled'] = (bool)($config['security']['csrf_enabled'] ?? true);
     $config['security']['csp_enabled'] = (bool)($config['security']['csp_enabled'] ?? true);
@@ -315,7 +315,7 @@ function getDefaultConfig(): array {
             'audit_log_enabled' => true,
             'audit_log_path' => '',
             'force_https' => false,
-            'allow_root_login' => true,
+            'allow_root_login' => false,
             'read_only_mode' => false,
             'csrf_enabled' => true,
             'csp_enabled' => true,
