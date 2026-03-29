@@ -208,6 +208,29 @@ function requireFields(array $input, array $fields): ?array {
     return null;
 }
 
+// Helper: validate associative array keys as SQL identifiers
+function validateIdentifierMap(array $map, string $fieldName, bool $allowEmpty = false): ?array {
+    if (!$allowEmpty && $map === []) {
+        http_response_code(400);
+        return ['error' => "{$fieldName} cannot be empty"];
+    }
+
+    foreach ($map as $key => $_value) {
+        if (!is_string($key) || $key === '') {
+            http_response_code(400);
+            return ['error' => "Invalid key in {$fieldName}"];
+        }
+        try {
+            Security::sanitizeIdentifier($key);
+        } catch (\InvalidArgumentException) {
+            http_response_code(400);
+            return ['error' => "Invalid key '{$key}' in {$fieldName}"];
+        }
+    }
+
+    return null;
+}
+
 function getUploadErrorMessage(int $errorCode): string {
     return match ($errorCode) {
         UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Uploaded file exceeds size limits',
@@ -476,6 +499,7 @@ $router->post('/api/data/{db}/{table}', function (array $params) use ($authMiddl
         http_response_code(400);
         return ['error' => 'Row data cannot be empty'];
     }
+    if ($err = validateIdentifierMap($input['row'], 'row')) return $err;
     $insertId = $dm->insertRow($db, $table, $input['row']);
     return ['success' => true, 'insert_id' => $insertId];
 });
@@ -489,6 +513,12 @@ $router->put('/api/data/{db}/{table}', function (array $params) use ($authMiddle
     $conn = getConnection();
     $dm = new DataManager($conn);
     if ($err = requireFields($input, ['row', 'where'])) return $err;
+    if (!is_array($input['row']) || !is_array($input['where'])) {
+        http_response_code(400);
+        return ['error' => 'row and where must be objects'];
+    }
+    if ($err = validateIdentifierMap($input['row'], 'row')) return $err;
+    if ($err = validateIdentifierMap($input['where'], 'where')) return $err;
     $affected = $dm->updateRow($db, $table, $input['row'], $input['where']);
     return ['success' => true, 'affected_rows' => $affected];
 });
@@ -502,6 +532,11 @@ $router->delete('/api/data/{db}/{table}', function (array $params) use ($authMid
     $conn = getConnection();
     $dm = new DataManager($conn);
     if ($err = requireFields($input, ['where'])) return $err;
+    if (!is_array($input['where'])) {
+        http_response_code(400);
+        return ['error' => 'where must be an object'];
+    }
+    if ($err = validateIdentifierMap($input['where'], 'where')) return $err;
     $affected = $dm->deleteRow($db, $table, $input['where']);
     return ['success' => true, 'affected_rows' => $affected];
 });
@@ -515,6 +550,17 @@ $router->post('/api/data/{db}/{table}/batch-delete', function (array $params) us
     $conn = getConnection();
     $dm = new DataManager($conn);
     if ($err = requireFields($input, ['rows'])) return $err;
+    if (!is_array($input['rows']) || $input['rows'] === []) {
+        http_response_code(400);
+        return ['error' => 'rows must be a non-empty array'];
+    }
+    foreach ($input['rows'] as $index => $where) {
+        if (!is_array($where)) {
+            http_response_code(400);
+            return ['error' => "rows[{$index}] must be an object"];
+        }
+        if ($err = validateIdentifierMap($where, "rows[{$index}]")) return $err;
+    }
     $affected = $dm->batchDelete($db, $table, $input['rows']);
     return ['success' => true, 'affected_rows' => $affected];
 });
