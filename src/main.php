@@ -255,45 +255,30 @@ $authMiddleware = function () use ($config): ?array {
     return null; // Auth passed
 };
 
-// Helper: parse JSON request body — exits with 400 on invalid input
+// Helper: parse JSON request body
 function getJsonInput(): array {
     $contentType = strtolower((string)($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? ''));
     if ($contentType !== '' && !str_starts_with($contentType, 'application/json')) {
-        http_response_code(415);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Content-Type must be application/json'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-        exit;
+        throw new ApiException('Content-Type must be application/json', 415);
     }
 
     $security = $GLOBALS['config']['security'] ?? [];
     $maxBodyBytes = max(1024, (int)($security['max_request_body_bytes'] ?? 1048576));
     $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($contentLength > $maxBodyBytes) {
-        http_response_code(413);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Request body too large'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-        exit;
+        throw new ApiException('Request body too large', 413);
     }
 
     $raw = file_get_contents('php://input');
     if ($raw !== false && strlen($raw) > $maxBodyBytes) {
-        http_response_code(413);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Request body too large'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-        exit;
+        throw new ApiException('Request body too large', 413);
     }
     if ($raw === '' || $raw === false) {
-        http_response_code(400);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Request body is empty'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-        exit;
+        throw new ApiException('Request body is empty', 400);
     }
     $data = json_decode($raw, true);
     if (!is_array($data)) {
-        http_response_code(400);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['error' => 'Invalid JSON in request body'], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-        exit;
+        throw new ApiException('Invalid JSON in request body', 400);
     }
     return $data;
 }
@@ -463,6 +448,22 @@ function writeAuditLog(string $event, array $context = []): void {
     $defaultPath = rtrim($scriptDir, '/\\') . DIRECTORY_SEPARATOR . 'databrowse.audit.log';
     $configuredPath = (string)($security['audit_log_path'] ?? '');
     $path = $configuredPath !== '' ? $configuredPath : $defaultPath;
+
+    // Prevent path traversal — audit log must stay within script directory or temp
+    $realPath = realpath(dirname($path));
+    $allowedDirs = [realpath($scriptDir), realpath(sys_get_temp_dir())];
+    $allowedDirs = array_filter($allowedDirs, fn($d) => $d !== false);
+    $pathAllowed = false;
+    foreach ($allowedDirs as $allowed) {
+        if ($realPath !== false && str_starts_with($realPath, $allowed)) {
+            $pathAllowed = true;
+            break;
+        }
+    }
+    if (!$pathAllowed && $configuredPath !== '') {
+        error_log('[DataBrowse] Audit log path rejected (outside allowed directories): ' . $configuredPath);
+        $path = $defaultPath;
+    }
 
     $record = [
         'ts' => gmdate('c'),

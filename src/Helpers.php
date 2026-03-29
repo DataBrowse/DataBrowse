@@ -13,18 +13,4 @@ final class Helpers {
         return round($size, 2) . ' ' . $units[$i];
     }
 
-    public static function formatDuration(int $seconds): string {
-        if ($seconds < 60) return "{$seconds}s";
-        if ($seconds < 3600) return floor($seconds / 60) . 'm ' . ($seconds % 60) . 's';
-        if ($seconds < 86400) return floor($seconds / 3600) . 'h ' . floor(($seconds % 3600) / 60) . 'm';
-        return floor($seconds / 86400) . 'd ' . floor(($seconds % 86400) / 3600) . 'h';
-    }
-
-    public static function jsonResponse(mixed $data, int $code = 200): never {
-        http_response_code($code);
-        header('Content-Type: application/json; charset=utf-8');
-        $encoded = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-        echo $encoded === false ? '{"error":"Failed to encode response"}' : $encoded;
-        exit;
-    }
 }

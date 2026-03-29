@@ -42,8 +42,36 @@ set_error_handler(function (int $errno, string $errstr, string $file, int $line)
     throw new ErrorException($errstr, 0, $errno, $file, $line);
 });
 
+// Typed API exception — carries an HTTP status code and a user-safe message.
+class ApiException extends \RuntimeException {
+    public function __construct(string $message, int $httpStatus = 400, ?\Throwable $previous = null) {
+        parent::__construct($message, $httpStatus, $previous);
+    }
+    public function getHttpStatus(): int {
+        return $this->code;
+    }
+}
+
 set_exception_handler(function (\Throwable $e): void {
     $requestId = DATABROWSE_REQUEST_ID;
+
+    // ApiException: expected error, don't log as unexpected
+    if ($e instanceof ApiException) {
+        $uri = $_SERVER['REQUEST_URI'] ?? '';
+        if (str_contains($uri, '/api/') || str_contains(strtolower($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json')) {
+            http_response_code($e->getHttpStatus());
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode([
+                'error' => $e->getMessage(),
+                'request_id' => $requestId,
+            ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        } else {
+            http_response_code($e->getHttpStatus());
+            header('Content-Type: text/plain; charset=utf-8');
+            echo $e->getMessage();
+        }
+        exit(1);
+    }
 
     error_log(sprintf(
         '[DataBrowse][%s] %s in %s:%d | %s',
@@ -103,6 +131,14 @@ function loadConfig(): array {
     }
     if (!file_exists($configFile)) {
         return getDefaultConfig();
+    }
+
+    // Warn if config file is world-readable (may contain session_secret)
+    if (PHP_OS_FAMILY !== 'Windows') {
+        $perms = @fileperms($configFile);
+        if ($perms !== false && ($perms & 0004)) {
+            error_log('[DataBrowse] WARNING: Config file is world-readable. Run: chmod 600 ' . $configFile);
+        }
     }
 
     $json = file_get_contents($configFile);

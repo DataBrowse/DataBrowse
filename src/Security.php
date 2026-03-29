@@ -55,7 +55,7 @@ final class Security {
             self::cleanupRateLimitFiles($dir, $window);
         }
 
-        $file = $dir . '/' . md5($key) . '.json';
+        $file = $dir . '/' . hash('sha256', $key) . '.json';
         $handle = fopen($file, 'c+');
         if ($handle === false) {
             return false;
